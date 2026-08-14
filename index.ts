@@ -33,6 +33,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import accountsExtension, { AccountStore, parseAccountName } from "@narumitw/pi-accounts/src/accounts.ts";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
+import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { buildUserAgent, injectBillingHeader } from "./billing.ts";
 import {
 	detectSubscriptionAccounts,
@@ -40,7 +41,6 @@ import {
 } from "./subscription-credentials.ts";
 
 const ALIAS_PREFIX = "anthropic-";
-const PLACEHOLDER_API_KEY = "pi-anthropic-account-provider-pending";
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 const BILLING_STATUS_KEY = "pi-multi-account";
 
@@ -99,6 +99,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	// Part 3 — per-account provider aliases in the /model picker.
 	const aliases = registerAccountAliasProviders(pi, store);
+	await aliases.bootstrap();
 
 	// Part 4 — subscription account import commands (/sub-accounts, /sub-import).
 	registerClaudeImportCommands(pi, store, aliases);
@@ -149,12 +150,23 @@ function registerBillingLayer(pi: ExtensionAPI): void {
 function registerAccountAliasProviders(
 	pi: ExtensionAPI,
 	store: AccountStore,
-): { sync(ctx: ExtensionContext): Promise<void> } {
+): { bootstrap(): Promise<void>; sync(ctx: ExtensionContext): Promise<void> } {
 	if (process.env.PI_MULTI_ACCOUNT_ALIASES === "0") {
-		return { sync: async (_ctx) => undefined };
+		return {
+			bootstrap: async () => undefined,
+			sync: async (_ctx) => undefined,
+		};
 	}
 
 	let models: ProviderModel[] = [];
+
+	async function bootstrap(): Promise<void> {
+		const state = await store.readProviderAsync("anthropic");
+		models = builtinAnthropicModels();
+		for (const name of Object.keys(state.accounts)) {
+			registerAliasProvider(pi, store, `${ALIAS_PREFIX}${name}`, models);
+		}
+	}
 
 	async function sync(ctx: ExtensionContext): Promise<void> {
 		const state = await store.readProviderAsync("anthropic");
@@ -174,36 +186,9 @@ function registerAccountAliasProviders(
 		}
 
 		for (const name of Object.keys(state.accounts)) {
-			registerAliasProvider(pi, `${ALIAS_PREFIX}${name}`, models, PLACEHOLDER_API_KEY);
+			registerAliasProvider(pi, store, `${ALIAS_PREFIX}${name}`, models);
 		}
 	}
-
-	pi.on("before_agent_start", async (_event, ctx) => {
-		const provider = ctx.model?.provider;
-		if (!provider?.startsWith(ALIAS_PREFIX)) return;
-		const accountName = provider.slice(ALIAS_PREFIX.length);
-		if (!accountName) return;
-
-		try {
-			const state = await store.readProviderAsync("anthropic");
-			let credential = state.accounts[accountName];
-			if (!credential) {
-				throw new Error(`Account "${accountName}" no longer exists in pi-accounts.json.`);
-			}
-			if (credential.expires <= Date.now() + REFRESH_SKEW_MS) {
-				credential = await refreshCredential(store, accountName, credential);
-			}
-			registerAliasProvider(
-				pi,
-				provider,
-				models.length > 0 ? models : readAnthropicModels(ctx),
-				credential.access,
-			);
-		} catch (error) {
-			ctx.ui.notify(`Anthropic account "${accountName}" is unavailable: ${errorMessage(error)}`, "error");
-			ctx.abort();
-		}
-	});
 
 	pi.registerCommand("anthropic-account-providers", {
 		description: "Refresh Anthropic named-account providers shown by /model",
@@ -218,24 +203,58 @@ function registerAccountAliasProviders(
 		},
 	});
 
-	return { sync };
+	return { bootstrap, sync };
+}
+
+function builtinAnthropicModels(): ProviderModel[] {
+	return getBuiltinModels("anthropic").map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({
+		...model,
+	})) as ProviderModel[];
 }
 
 function registerAliasProvider(
 	pi: ExtensionAPI,
+	store: AccountStore,
 	id: string,
 	models: ProviderModel[],
-	apiKey: string,
 ): void {
+	const accountName = id.startsWith(ALIAS_PREFIX) ? id.slice(ALIAS_PREFIX.length) : id;
+	const baseProvider = builtinProviders().find((provider) => provider.id === "anthropic");
+	if (!baseProvider) throw new Error("Pi's built-in Anthropic provider is unavailable.");
+	const aliasModels = models.map((model) => ({
+		...model,
+		provider: id,
+		baseUrl: "https://api.anthropic.com",
+	}));
 	pi.unregisterProvider(id);
-	pi.registerProvider(id, {
+	pi.registerProvider({
+		id,
 		name: id,
 		baseUrl: "https://api.anthropic.com",
-		api: "anthropic-messages",
-		apiKey,
-		// Subscription billing needs the full Claude Code user-agent here too.
 		headers: { "user-agent": buildUserAgent() },
-		models,
+		auth: {
+			apiKey: {
+				name: `${id} account token`,
+				async resolve({ signal }) {
+					signal.throwIfAborted();
+					const state = await store.readProviderAsync("anthropic");
+					let credential = state.accounts[accountName];
+					if (!credential || credential.type !== "oauth") return undefined;
+					if (credential.expires <= Date.now() + REFRESH_SKEW_MS) {
+						credential = await refreshCredential(store, accountName, credential);
+					}
+					signal.throwIfAborted();
+					return {
+						auth: { headers: { Authorization: `Bearer ${credential.access}` } },
+						source: `pi-accounts:${accountName}`,
+					};
+				},
+			},
+		},
+		getModels: () => aliasModels,
+		...(baseProvider.filterModels ? { filterModels: (providerModels, credential) => baseProvider.filterModels?.(providerModels as any, credential) } : {}),
+		stream: (model, context, options) => baseProvider.stream(model as any, context, options as any),
+		streamSimple: (model, context, options) => baseProvider.streamSimple(model as any, context, options as any),
 	});
 }
 
