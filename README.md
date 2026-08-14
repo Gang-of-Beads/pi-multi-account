@@ -1,0 +1,404 @@
+# pi-multi-account
+
+`pi-multi-account` adds two capabilities to pi:
+
+1. **Multi-account OAuth switching** via [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts), so Anthropic, GitHub Copilot, and OpenAI Codex accounts can be managed from one `/accounts` menu.
+2. **Claude subscription billing bridging** for Anthropic OAuth (`sk-ant-oat...`) requests, by sending the Claude Code-style user-agent and `x-anthropic-billing-header` required to route usage to a Claude Pro / Max subscription instead of pay-as-you-go API billing / extra usage.
+
+It also includes:
+
+- automatic import of existing **Claude Code** sign-ins from this machine
+- per-account `anthropic-<account>` aliases in `/model`
+- automatic recovery when the active Anthropic account is deleted, so the entire `anthropic` provider does not disappear from `/model`
+
+---
+
+## Compatibility
+
+- **Tested with pi**: `0.84.1`
+- **Runtime model**: TypeScript extension loaded directly by pi through `jiti` (no prebuild required)
+- **Credential discovery**:
+  - primarily supports **macOS Keychain** for Claude Code detection
+  - also supports `~/.claude/.credentials.json`
+
+---
+
+## Features
+
+| Feature | What it does |
+| --- | --- |
+| `/accounts` | Manage named OAuth accounts for Anthropic / GitHub Copilot / OpenAI Codex and switch the active account |
+| `/sub-accounts` | Detect subscription-backed accounts already available on this machine (currently Claude Code) and show whether they are imported |
+| `/sub-import [name...]` | Import detected subscription accounts; defaults to names like `cc`, `cc-pro`, `cc-max`, but custom names are supported |
+| `anthropic-<name>` provider aliases | Every named Anthropic account appears directly in `/model`, e.g. `anthropic-personal`, `anthropic-work` |
+| Claude subscription billing bridge | Adds the Claude Code style user-agent and billing header to Anthropic OAuth requests so usage is charged to the Claude subscription path |
+| Active-account auto-heal | If the current active Anthropic account is deleted, the next `session_start` automatically activates the first remaining account |
+| Status footer | Shows `anthropic: <active-account> · subscription billing` |
+
+---
+
+## Installation
+
+> Recommended: install it as a **pi package**, so it can be managed with `pi install`, `pi update`, and `pi remove`.
+
+### Option A: install from the private GitHub repo
+
+If your machine has access to the private repository:
+
+#### SSH
+
+```bash
+pi install git:git@github.com:VincentHanxiaoDu/pi-multi-account.git@v0.4.0
+```
+
+#### HTTPS
+
+```bash
+pi install git:https://github.com/VincentHanxiaoDu/pi-multi-account.git@v0.4.0
+```
+
+Then run:
+
+```bash
+/reload
+```
+
+Or simply restart pi.
+
+### Option B: install from a local path
+
+```bash
+pi install /absolute/path/to/pi-multi-account
+```
+
+### Option C: install by cloning into the extensions directory
+
+```bash
+git clone git@github.com:VincentHanxiaoDu/pi-multi-account.git \
+  ~/.pi/agent/extensions/pi-multi-account
+```
+
+Then:
+
+```bash
+/reload
+```
+
+---
+
+## Quick start
+
+Recommended first-run flow:
+
+1. `/sub-accounts`  
+   See which Claude Code subscription accounts are already detectable on this machine.
+
+2. `/sub-import`  
+   Import those accounts into the `pi-accounts` store. On an empty Anthropic account store, the extension will usually auto-import them as well.
+
+3. `/accounts`  
+   Verify the active account and switch if needed.
+
+4. `/model`  
+   Choose either:
+   - native `anthropic/...` models, which use the current active account
+   - or `anthropic-<name>/...`, which pins a specific named account
+
+5. Check the footer  
+   It should show:
+
+   ```text
+   anthropic: <active-account> · subscription billing
+   ```
+
+---
+
+## How pi installs and loads this package
+
+This repository follows the **Pi Package** format.
+
+Its `package.json` includes:
+
+```json
+{
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
+```
+
+That means pi can install it directly as a package with:
+
+- `pi install git:...`
+- `pi install /path/to/package`
+
+At install time, pi will:
+
+- clone or copy the package
+- run `npm install`
+- load the TypeScript extension through `jiti`
+
+And `/reload` can hot-reload installed packages and auto-discovered extensions.
+
+Because of that, this repository works both as:
+
+- a GitHub-hosted installable pi package
+- a local extension directory
+
+---
+
+## Commands
+
+### `/accounts`
+
+Provided by `@narumitw/pi-accounts`.
+
+Use it to:
+
+- list provider accounts
+- switch the active account
+- delete accounts
+- add new OAuth accounts
+
+Persistent store:
+
+- `~/.pi/agent/pi-accounts.json`
+
+### `/sub-accounts`
+
+Lists subscription-backed accounts that can be imported.
+
+Current sources:
+
+- Claude Code credentials stored in the macOS Keychain
+- `~/.claude/.credentials.json`
+
+### `/sub-import [name...]`
+
+Imports detected subscription-backed accounts into the `pi-accounts` Anthropic store.
+
+Behavior:
+
+- defaults to names such as `cc`, `cc-pro`, `cc-max`
+- supports custom names, for example:
+
+```bash
+/sub-import claude-main claude-work
+```
+
+- reads Claude Code credentials in **read-only** mode
+- does **not** write anything back into Claude Code's own credential storage
+
+### `/anthropic-account-providers`
+
+Force-resyncs the `anthropic-<name>` provider aliases shown in `/model`.
+
+---
+
+## How the billing bridge works
+
+pi's built-in Anthropic OAuth path already sends:
+
+- a Claude Code identity block
+- Anthropic OAuth bearer tokens
+- the expected beta headers
+
+But that alone is not enough to consistently hit the Claude subscription billing path.
+
+This extension adds two missing pieces:
+
+1. a full Claude Code user-agent:
+
+```text
+claude-cli/<version> (external, sdk-cli)
+```
+
+2. a payload-level billing header block:
+
+```text
+x-anthropic-billing-header
+```
+
+Together, those make Anthropic treat the request as Claude Code-style subscription traffic instead of a normal API request.
+
+### Cases that are intentionally skipped
+
+The billing injection is skipped for:
+
+- non-Claude models
+- non-Anthropic OAuth requests
+- plain API key requests
+- GitHub Copilot / Codex traffic
+
+---
+
+## Environment variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run auto-import when the Anthropic account store is empty |
+| `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to disable `anthropic-<name>` provider aliases |
+| `ANTHROPIC_CLI_VERSION` | `2.1.160` | Overrides the Claude CLI version used in the billing header and user-agent |
+| `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | Overrides the user-agent entrypoint |
+| `ANTHROPIC_USER_AGENT` | auto-generated | Fully overrides the Anthropic user-agent |
+
+---
+
+## Storage and runtime behavior
+
+### Account storage
+
+- `~/.pi/agent/pi-accounts.json`
+
+### Auto-import sources
+
+- macOS Keychain services: `Claude Code-credentials` / `Claude Code-credentials-*`
+- `~/.claude/.credentials.json`
+
+### Alias provider behavior
+
+`anthropic-<name>` aliases are runtime providers that:
+
+- are registered during `session_start`
+- become visible in `/model`
+- replace the placeholder key with the account's real OAuth access token during `before_agent_start`
+
+### Print-mode limitation
+
+Alias providers are registered during `session_start`, but `pi -p --model ...` resolves the model earlier.
+
+So:
+
+- `pi -p --model anthropic-foo/...` is **not guaranteed to work**
+- in print mode, prefer native `anthropic/...` and set the active account in `/accounts` first
+
+---
+
+## Upgrade and migration notes
+
+If you previously used:
+
+- a custom `anthropic-multi-account.ts`
+- a custom `anthropic-account-providers.ts`
+- a standalone `@narumitw/pi-accounts` package install
+
+remove duplicate loading sources so the same `/accounts` menu or provider logic is not loaded twice.
+
+### Remove a standalone pi-accounts package
+
+```bash
+pi remove npm:@narumitw/pi-accounts
+```
+
+### Check your settings and extension directories
+
+Inspect:
+
+- `~/.pi/agent/settings.json`
+- `~/.pi/agent/extensions/`
+
+Make sure only one copy of this behavior is active.
+
+---
+
+## Troubleshooting
+
+### 1) `anthropic` does not appear in `/model`
+
+Common causes:
+
+- there is no active Anthropic account
+- you deleted the active account
+- the current session has not been reloaded yet
+
+Try:
+
+1. `/accounts` to verify the active account
+2. `/reload`
+3. check whether the footer shows:
+
+```text
+anthropic: <name> · subscription billing
+```
+
+This extension auto-heals the active account on `session_start`, but you can always choose the active account manually in `/accounts`.
+
+### 2) Deleted account aliases still appear in `/model`
+
+Run:
+
+```bash
+/reload
+```
+
+The extension cleans stale `anthropic-<name>` aliases during `session_start`.
+
+### 3) `/sub-accounts` does not detect any Claude Code accounts
+
+Check:
+
+- whether Claude Code is actually logged in on this machine
+- whether the macOS Keychain contains `Claude Code-credentials...`
+- whether `~/.claude/.credentials.json` exists
+
+### 4) `pi -p` with an alias model fails
+
+This is a known limitation. Use:
+
+- native `anthropic/...`
+- and set the active account first via `/accounts`
+
+---
+
+## Security and policy note
+
+> Important: the Claude subscription billing bridge in this extension intentionally makes third-party pi requests look like Claude Code subscription requests.
+
+That means:
+
+- this is explicitly enabled by user request
+- it is different from using a normal Anthropic API key
+- for long-term use, you should keep an eye on Anthropic's terms for third-party CLI / subscription usage
+
+Also remember:
+
+- pi extensions run with full permissions on your machine
+- install only code you trust
+- `pi install git:...` and `pi install npm:...` both install executable code
+
+---
+
+## Development
+
+```bash
+cd ~/.pi/agent/extensions/pi-multi-account
+npm install
+npx tsc --noEmit
+```
+
+### Local testing
+
+```bash
+pi -e /absolute/path/to/pi-multi-account
+```
+
+Or place it directly in:
+
+```bash
+~/.pi/agent/extensions/pi-multi-account
+```
+
+Then run:
+
+```bash
+/reload
+```
+
+---
+
+## Credits
+
+- Multi-account runtime support comes from [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts)
+- `billing.ts` and `subscription-credentials.ts` were adapted from [`pi-claude-auth`](https://github.com/pankajudhas81/pi-claude-auth) (MIT)
+
+See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for attribution and licensing notes.
