@@ -31,11 +31,24 @@ import type {
 	ExtensionContext,
 	ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
-import accountsExtension, { AccountStore, parseAccountName } from "@narumitw/pi-accounts/src/accounts.ts";
+import accountsExtension, {
+	AccountStore,
+	DEFAULT_PI_LOGIN_LABEL,
+	parseAccountName,
+} from "@narumitw/pi-accounts/src/accounts.ts";
+import {
+	defineOwn,
+	defineOwnMap,
+	getOwnCredential,
+	normalizeStoredCredential,
+} from "@narumitw/pi-accounts/src/account-store.ts";
 import {
 	createBuiltinProviderAdapters,
+	loginWithOAuthUI,
 	type AccountProviderAdapter,
+	type AccountProviderId,
 } from "@narumitw/pi-accounts/src/oauth.ts";
+import { redactTokenText } from "@narumitw/pi-accounts/src/runtime-auth.ts";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { buildUserAgent, injectBillingHeader } from "./billing.ts";
@@ -119,7 +132,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const aliases = registerAccountAliasProviders(pi, store);
 	await aliases.bootstrap();
 
-	// Part 4 — subscription account import commands (/sub-accounts, /sub-import).
+	// Part 4 — interactive account manager override with explicit re-login.
+	registerAccountsCommandOverride(pi, store, providers, aliases, refreshLoop);
+
+	// Part 5 — subscription account import commands (/sub-accounts, /sub-import).
 	registerClaudeImportCommands(pi, store, aliases, refreshLoop);
 
 	// Status footer: show the active Anthropic account and billing mode.
@@ -229,6 +245,365 @@ function preserveCredentialMetadata<T extends OAuthCredential>(
 		...(refreshed as Record<string, unknown>),
 		type: "oauth",
 	} as T;
+}
+
+function registerAccountsCommandOverride(
+	pi: ExtensionAPI,
+	store: AccountStore,
+	providers: readonly AccountProviderAdapter[],
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): void {
+	const adapterMap = new Map<AccountProviderId, AccountProviderAdapter>(
+		providers.map((provider) => [provider.id, provider]),
+	);
+
+	pi.registerCommand("accounts", {
+		description: "Manage provider OAuth accounts, including re-login for existing accounts",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("/accounts requires interactive UI (TUI or RPC mode).", "error");
+				return;
+			}
+
+			const states = await readProviderStates(store, providers);
+			const hasAnyStoredAccount = states.some((state) => Object.keys(state.accounts).length > 0);
+			const actions = [
+				"Login new account",
+				...(hasAnyStoredAccount
+					? [
+						"Re-login existing account",
+						"Switch active account",
+						"Remove account",
+					]
+					: []),
+			];
+			const action = await ctx.ui.select(formatAccountsOverview(ctx, states), actions);
+			if (!action) return;
+
+			switch (action) {
+				case "Login new account":
+					await loginNewAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
+					return;
+				case "Re-login existing account":
+					await reloginExistingAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
+					return;
+				case "Switch active account":
+					await switchStoredAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
+					return;
+				case "Remove account":
+					await removeStoredAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
+					return;
+			}
+		},
+	});
+}
+
+type ProviderState = {
+	adapter: AccountProviderAdapter;
+	active?: string;
+	accounts: Record<string, OAuthCredential>;
+};
+
+async function readProviderStates(
+	store: AccountStore,
+	providers: readonly AccountProviderAdapter[],
+): Promise<ProviderState[]> {
+	const states: ProviderState[] = [];
+	for (const provider of providers) {
+		const state = await store.readProviderAsync(provider.id);
+		states.push({ adapter: provider, active: state.active, accounts: state.accounts });
+	}
+	return states;
+}
+
+function formatAccountsOverview(ctx: ExtensionCommandContext, states: readonly ProviderState[]): string {
+	const lines = [
+		"Accounts",
+		"",
+		`Current model: ${formatCurrentModel(ctx)}`,
+		"",
+		"Active accounts:",
+		...states.map((state) => `  ${state.adapter.displayName}: ${state.active ?? "default"}`),
+		"",
+		"Saved accounts:",
+		...states.flatMap((state) => {
+			const names = Object.keys(state.accounts).sort();
+			return names.length > 0
+				? names.map((name) => `  ${state.adapter.displayName}: ${name}${state.active === name ? " (active)" : ""}`)
+				: [`  ${state.adapter.displayName}: (none)`];
+		}),
+		"",
+		"Choose an action:",
+	];
+	return lines.join("\n");
+}
+
+function formatCurrentModel(ctx: ExtensionCommandContext): string {
+	if (!ctx.model) return "(none)";
+	return `${ctx.model.provider} / ${ctx.model.id}`;
+}
+
+async function selectProviderState(
+	ctx: ExtensionCommandContext,
+	states: readonly ProviderState[],
+	title: string,
+	filter: (state: ProviderState) => boolean = () => true,
+): Promise<ProviderState | undefined> {
+	const options = states.filter(filter);
+	if (options.length === 0) return undefined;
+	const labels = options.map((state) => {
+		const count = Object.keys(state.accounts).length;
+		return `${state.adapter.displayName} · active ${state.active ?? "default"} · ${count} saved`;
+	});
+	const selected = await ctx.ui.select(title, labels);
+	if (!selected) return undefined;
+	return options[labels.indexOf(selected)];
+}
+
+async function selectStoredAccountName(
+	ctx: ExtensionCommandContext,
+	state: ProviderState,
+	title: string,
+	includeDefault = false,
+): Promise<string | undefined> {
+	const names = Object.keys(state.accounts).sort();
+	const labels = [
+		...(includeDefault ? [`${DEFAULT_PI_LOGIN_LABEL}${state.active ? "" : " (active)"}`] : []),
+		...names.map((name) => `${name}${state.active === name ? " (active)" : ""}`),
+	];
+	if (labels.length === 0) return undefined;
+	const selected = await ctx.ui.select(title, labels);
+	if (!selected) return undefined;
+	if (selected.startsWith(DEFAULT_PI_LOGIN_LABEL)) return DEFAULT_PI_LOGIN_LABEL;
+	return selected.replace(/ \(active\)$/, "");
+}
+
+async function loginNewAccount(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+	states: readonly ProviderState[],
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): Promise<void> {
+	const state = await selectProviderState(ctx, states, "Select provider for new login");
+	if (!state) return;
+	const name = await ctx.ui.input(`Name this ${state.adapter.displayName} account:`, "work");
+	if (name === undefined) return;
+	await runOauthLogin(ctx, store, adapterMap, state.adapter.id, name, aliases, refreshLoop, false);
+}
+
+async function reloginExistingAccount(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+	states: readonly ProviderState[],
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): Promise<void> {
+	const state = await selectProviderState(
+		ctx,
+		states,
+		"Select provider to re-login",
+		(candidate) => Object.keys(candidate.accounts).length > 0,
+	);
+	if (!state) {
+		ctx.ui.notify("No saved accounts to re-login.", "info");
+		return;
+	}
+	const accountName = await selectStoredAccountName(
+		ctx,
+		state,
+		`Select ${state.adapter.displayName} account to re-login`,
+	);
+	if (!accountName) return;
+	await runOauthLogin(ctx, store, adapterMap, state.adapter.id, accountName, aliases, refreshLoop, true);
+}
+
+async function runOauthLogin(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+	providerId: AccountProviderId,
+	nameArg: string,
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+	replaceExpected: boolean,
+): Promise<void> {
+	const adapter = adapterMap.get(providerId);
+	if (!adapter) throw new Error(`Unsupported account provider: ${providerId}`);
+	const parsed = parseAccountName(nameArg);
+	if (!parsed.ok) {
+		ctx.ui.notify(parsed.error, "warning");
+		return;
+	}
+	if (isDefaultPiLoginName(parsed.name)) {
+		ctx.ui.notify('"default" is reserved for Pi\'s built-in login.', "warning");
+		return;
+	}
+	const existingState = await store.readProviderAsync(providerId);
+	const exists = !!getOwnCredential(existingState.accounts, parsed.name);
+	if (exists) {
+		const confirmed = await ctx.ui.confirm(
+			replaceExpected ? "Re-login account" : "Replace account",
+			replaceExpected
+				? `${adapter.displayName} account "${parsed.name}" will re-run OAuth and replace the saved tokens. Continue?`
+				: `${adapter.displayName} account "${parsed.name}" already exists. Replace it?`,
+		);
+		if (!confirmed) return;
+	} else if (replaceExpected) {
+		ctx.ui.notify(`${adapter.displayName} account "${parsed.name}" was not found.`, "warning");
+		return;
+	}
+
+	ctx.ui.notify(
+		`${replaceExpected ? "Re-running" : "Starting"} ${adapter.displayName} login for "${parsed.name}".`,
+		"info",
+	);
+	try {
+		const credential = preserveCredentialMetadata(
+			(existingState.accounts[parsed.name] as OAuthCredential | undefined) ?? ({
+				type: "oauth",
+				access: "",
+				refresh: "",
+				expires: 0,
+			} as OAuthCredential),
+			normalizeStoredCredential(
+				await loginWithOAuthUI(ctx, adapter, new AbortController().signal),
+				parsed.name,
+			),
+		);
+		await store.updateProvider(providerId, (state) => ({
+			active: parsed.name,
+			accounts: defineOwn(state.accounts, parsed.name, credential),
+		}));
+		await afterAccountMutation(ctx, store, aliases, refreshLoop);
+		ctx.ui.notify(
+			`${replaceExpected ? "Re-logged in" : "Logged in"} ${adapter.displayName} account "${parsed.name}". Active on the next turn.`,
+			"info",
+		);
+	} catch (error) {
+		ctx.ui.notify(`${adapter.displayName} login failed: ${redactTokenText(errorMessage(error))}`, "error");
+	}
+}
+
+async function switchStoredAccount(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+	states: readonly ProviderState[],
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): Promise<void> {
+	const state = await selectProviderState(
+		ctx,
+		states,
+		"Select provider to switch",
+		(candidate) => Object.keys(candidate.accounts).length > 0,
+	);
+	if (!state) {
+		ctx.ui.notify("No saved accounts to switch.", "info");
+		return;
+	}
+	const target = await selectStoredAccountName(
+		ctx,
+		state,
+		`Select active ${state.adapter.displayName} account`,
+		true,
+	);
+	if (!target) return;
+	const adapter = adapterMap.get(state.adapter.id);
+	if (!adapter) throw new Error(`Unsupported account provider: ${state.adapter.id}`);
+	if (target === DEFAULT_PI_LOGIN_LABEL) {
+		await store.updateProvider(adapter.id, (current) => ({ ...current, active: undefined }));
+		await afterAccountMutation(ctx, store, aliases, refreshLoop);
+		ctx.ui.notify(`Using default Pi ${adapter.displayName} login on the next turn.`, "info");
+		return;
+	}
+	let switched = false;
+	await store.updateProvider(adapter.id, (current) => {
+		if (!getOwnCredential(current.accounts, target)) return current;
+		switched = true;
+		return { ...current, active: target };
+	});
+	if (!switched) {
+		ctx.ui.notify(`${adapter.displayName} account "${target}" was not found.`, "warning");
+		return;
+	}
+	await afterAccountMutation(ctx, store, aliases, refreshLoop);
+	ctx.ui.notify(`Activated ${adapter.displayName} account "${target}" for the next turn.`, "info");
+}
+
+async function removeStoredAccount(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+	states: readonly ProviderState[],
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): Promise<void> {
+	const state = await selectProviderState(
+		ctx,
+		states,
+		"Select provider to remove from",
+		(candidate) => Object.keys(candidate.accounts).length > 0,
+	);
+	if (!state) {
+		ctx.ui.notify("No saved accounts to remove.", "info");
+		return;
+	}
+	const accountName = await selectStoredAccountName(
+		ctx,
+		state,
+		`Select ${state.adapter.displayName} account to remove`,
+	);
+	if (!accountName) return;
+	const adapter = adapterMap.get(state.adapter.id);
+	if (!adapter) throw new Error(`Unsupported account provider: ${state.adapter.id}`);
+	const confirmed = await ctx.ui.confirm(
+		"Remove account",
+		`Remove ${adapter.displayName} account "${accountName}"?`,
+	);
+	if (!confirmed) return;
+	let removed = false;
+	await store.updateProvider(adapter.id, (current) => {
+		if (!getOwnCredential(current.accounts, accountName)) return current;
+		removed = true;
+		const accounts = defineOwnMap(current.accounts);
+		delete accounts[accountName];
+		return { active: current.active === accountName ? undefined : current.active, accounts };
+	});
+	if (!removed) {
+		ctx.ui.notify(`${adapter.displayName} account "${accountName}" was not found.`, "warning");
+		return;
+	}
+	await afterAccountMutation(ctx, store, aliases, refreshLoop);
+	ctx.ui.notify(`Removed ${adapter.displayName} account "${accountName}".`, "info");
+}
+
+async function afterAccountMutation(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): Promise<void> {
+	await refreshLoop.refreshNow();
+	try {
+		await aliases.sync(ctx);
+	} catch (error) {
+		ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
+	}
+	await updateBillingStatus(store, ctx);
+}
+
+function isDefaultPiLoginName(value: string): boolean {
+	const normalized = value.trim().toLowerCase();
+	return (
+		normalized === "default" ||
+		normalized === "--default" ||
+		normalized === DEFAULT_PI_LOGIN_LABEL.toLowerCase()
+	);
 }
 
 // ---------------------------------------------------------------------------
