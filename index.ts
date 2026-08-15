@@ -32,6 +32,10 @@ import type {
 	ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 import accountsExtension, { AccountStore, parseAccountName } from "@narumitw/pi-accounts/src/accounts.ts";
+import {
+	createBuiltinProviderAdapters,
+	type AccountProviderAdapter,
+} from "@narumitw/pi-accounts/src/oauth.ts";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { buildUserAgent, injectBillingHeader } from "./billing.ts";
@@ -42,6 +46,7 @@ import {
 
 const ALIAS_PREFIX = "anthropic-";
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
+const BACKGROUND_REFRESH_POLL_MS = 60 * 1000;
 const BILLING_STATUS_KEY = "pi-multi-account";
 
 type StoredClaudeCredential = OAuthCredential & {
@@ -55,6 +60,12 @@ type ProviderModel = ProviderModelConfig & Record<string, unknown>;
 
 export default async function (pi: ExtensionAPI): Promise<void> {
 	const store = new AccountStore();
+	const providers = createPatchedProviders();
+	const anthropicProvider = providers.find((provider) => provider.id === "anthropic");
+	if (!anthropicProvider) {
+		throw new Error("pi-multi-account: missing Anthropic provider adapter.");
+	}
+	const refreshLoop = createBackgroundRefreshLoop(store, providers);
 
 	// Zero-friction bootstrap: if no Anthropic account has been added yet,
 	// import the accounts Claude Code already knows about. Runs inside the
@@ -92,7 +103,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	});
 
 	// Part 1 — pi-accounts: /accounts menu, store, runtime auth switching.
-	accountsExtension(pi, { store });
+	//
+	// Node 24's AbortSignal.any() throws when any entry is undefined. pi's
+	// built-in Anthropic OAuth refresh currently accepts an optional signal, but
+	// the underlying refresh helper assumes a concrete AbortSignal. pi-accounts
+	// calls oauth.refresh() without a signal during session/account sync, which
+	// can fail-closed the Anthropic provider before any network request is even
+	// attempted. Wrap the Anthropic adapter so refresh always gets a real signal.
+	accountsExtension(pi, { store, providers });
 
 	// Part 2 — Claude subscription billing layer.
 	registerBillingLayer(pi);
@@ -102,10 +120,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	await aliases.bootstrap();
 
 	// Part 4 — subscription account import commands (/sub-accounts, /sub-import).
-	registerClaudeImportCommands(pi, store, aliases);
+	registerClaudeImportCommands(pi, store, aliases, refreshLoop);
 
 	// Status footer: show the active Anthropic account and billing mode.
 	pi.on("session_start", async (_event, ctx) => {
+		await refreshLoop.refreshNow();
+		refreshLoop.start();
 		try {
 			await aliases.sync(ctx);
 		} catch (error) {
@@ -114,6 +134,101 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 		await updateBillingStatus(store, ctx);
 	});
+
+	pi.on("session_shutdown", async () => {
+		refreshLoop.stop();
+	});
+}
+
+function createPatchedProviders(): AccountProviderAdapter[] {
+	return createBuiltinProviderAdapters().map((provider) => ({
+		...provider,
+		oauth: {
+			...provider.oauth,
+			refresh: async (credential, signal) =>
+				preserveCredentialMetadata(
+					credential,
+					await provider.oauth.refresh(credential, signal ?? new AbortController().signal),
+				),
+		},
+	}));
+}
+
+function createBackgroundRefreshLoop(
+	store: AccountStore,
+	providers: readonly AccountProviderAdapter[],
+): { start(): void; stop(): void; refreshNow(): Promise<void> } {
+	let timer: NodeJS.Timeout | undefined;
+	let running: Promise<void> | undefined;
+
+	const refreshNow = async (): Promise<void> => {
+		if (running) return running;
+		running = (async () => {
+			try {
+				await refreshExpiringAccounts(store, providers);
+			} catch (error) {
+				console.warn("pi-multi-account: background refresh failed:", errorMessage(error));
+			} finally {
+				running = undefined;
+			}
+		})();
+		return running;
+	};
+
+	return {
+		start() {
+			if (timer) clearInterval(timer);
+			timer = setInterval(() => {
+				void refreshNow();
+			}, BACKGROUND_REFRESH_POLL_MS);
+			timer.unref?.();
+		},
+		stop() {
+			if (!timer) return;
+			clearInterval(timer);
+			timer = undefined;
+		},
+		refreshNow,
+	};
+}
+
+async function refreshExpiringAccounts(
+	store: AccountStore,
+	providers: readonly AccountProviderAdapter[],
+): Promise<void> {
+	const now = Date.now();
+	for (const provider of providers) {
+		let state;
+		try {
+			state = await store.readProviderAsync(provider.id);
+		} catch (error) {
+			console.warn(
+				`pi-multi-account: failed to read ${provider.id} accounts for background refresh: ${errorMessage(error)}`,
+			);
+			continue;
+		}
+		for (const [accountName, credential] of Object.entries(state.accounts)) {
+			if (credential.expires > now + REFRESH_SKEW_MS) continue;
+			try {
+				await refreshStoredCredential(store, provider, accountName, credential, now);
+			} catch (error) {
+				console.warn(
+					`pi-multi-account: ${provider.id} account "${accountName}" background refresh failed: ${errorMessage(error)}`,
+				);
+			}
+		}
+	}
+}
+
+function preserveCredentialMetadata<T extends OAuthCredential>(
+	previous: T,
+	refreshed: OAuthCredential,
+): T {
+	return {
+		...(previous as Record<string, unknown>),
+		...(refreshed as Record<string, unknown>),
+		type: "oauth",
+	} as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +304,6 @@ function registerAccountAliasProviders(
 			registerAliasProvider(pi, store, `${ALIAS_PREFIX}${name}`, models);
 		}
 	}
-
 	pi.registerCommand("anthropic-account-providers", {
 		description: "Refresh Anthropic named-account providers shown by /model",
 		handler: async (_args, ctx) => {
@@ -269,8 +383,8 @@ async function refreshCredential(
 	store: AccountStore,
 	accountName: string,
 	credential: OAuthCredential,
+	now = Date.now(),
 ): Promise<OAuthCredential> {
-	const { builtinProviders } = await import("@earendil-works/pi-ai/providers/all");
 	const oauth = builtinProviders().find((provider) => provider.id === "anthropic")?.auth.oauth;
 	if (!oauth) throw new Error("Pi's built-in Anthropic OAuth provider is unavailable.");
 
@@ -280,11 +394,37 @@ async function refreshCredential(
 		if (!latest || latest.type !== "oauth") {
 			throw new Error(`Account "${accountName}" was removed while refreshing.`);
 		}
-		if (latest.expires > Date.now() + REFRESH_SKEW_MS) {
+		if (latest.expires > now + REFRESH_SKEW_MS) {
 			refreshed = latest;
 			return state;
 		}
-		refreshed = await oauth.refresh(latest, new AbortController().signal);
+		refreshed = preserveCredentialMetadata(latest, await oauth.refresh(latest, new AbortController().signal));
+		return {
+			...state,
+			accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
+		};
+	});
+	return refreshed;
+}
+
+async function refreshStoredCredential(
+	store: AccountStore,
+	provider: AccountProviderAdapter,
+	accountName: string,
+	credential: OAuthCredential,
+	now = Date.now(),
+): Promise<OAuthCredential> {
+	let refreshed = credential;
+	await store.updateProviderAsync(provider.id, async (state) => {
+		const latest = state.accounts[accountName];
+		if (!latest || latest.type !== "oauth") {
+			throw new Error(`Account "${accountName}" was removed while refreshing.`);
+		}
+		if (latest.expires > now + REFRESH_SKEW_MS) {
+			refreshed = latest;
+			return state;
+		}
+		refreshed = await provider.oauth.refresh(latest, new AbortController().signal);
 		return {
 			...state,
 			accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
@@ -301,6 +441,7 @@ function registerClaudeImportCommands(
 	pi: ExtensionAPI,
 	store: AccountStore,
 	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
 ): void {
 	pi.registerCommand("sub-accounts", {
 		description: "List subscription accounts detected on this machine (currently Claude Code) and their import status",
@@ -362,12 +503,14 @@ function registerClaudeImportCommands(
 				}
 				const imported = await importClaudeAccounts(store, detected, names);
 				if (imported.length === 0) {
+					await refreshLoop.refreshNow();
 					ctx.ui.notify(
 						"No new accounts to import (all detected accounts are already imported).",
 						"info",
 					);
 					return;
 				}
+				await refreshLoop.refreshNow();
 				await aliases.sync(ctx);
 				await updateBillingStatus(store, ctx);
 				ctx.ui.notify(
