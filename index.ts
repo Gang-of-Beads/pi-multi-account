@@ -49,6 +49,8 @@ import {
 	type AccountProviderId,
 } from "@narumitw/pi-accounts/src/oauth.ts";
 import { redactTokenText } from "@narumitw/pi-accounts/src/runtime-auth.ts";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { buildUserAgent, injectBillingHeader } from "./billing.ts";
@@ -74,11 +76,22 @@ type ProviderModel = ProviderModelConfig & Record<string, unknown>;
 export default async function (pi: ExtensionAPI): Promise<void> {
 	const store = new AccountStore();
 	const providers = createPatchedProviders();
+	let normalizingAnthropicAliasSelection = false;
 	const anthropicProvider = providers.find((provider) => provider.id === "anthropic");
 	if (!anthropicProvider) {
 		throw new Error("pi-multi-account: missing Anthropic provider adapter.");
 	}
 	const refreshLoop = createBackgroundRefreshLoop(store, providers);
+
+	// Canonicalize a persisted anthropic-<account> default provider back to the
+	// real `anthropic` provider before a session is restored. Alias providers are
+	// a convenient /model entrypoint, but persisting them as the canonical
+	// provider makes startup depend on alias registration timing.
+	try {
+		await normalizePersistedAnthropicAliasDefaultProvider(store);
+	} catch (error) {
+		console.warn("pi-multi-account: settings default-provider normalization failed:", errorMessage(error));
+	}
 
 	// Zero-friction bootstrap: if no Anthropic account has been added yet,
 	// import the accounts Claude Code already knows about. Runs inside the
@@ -148,6 +161,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			console.error(`pi-multi-account: account providers were not loaded: ${errorMessage(error)}`);
 			ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
 		}
+		await normalizeAnthropicAliasSelection(pi, store, ctx, () => normalizingAnthropicAliasSelection, (next) => {
+			normalizingAnthropicAliasSelection = next;
+		});
+		await updateBillingStatus(store, ctx);
+	});
+
+	pi.on("model_select", async (event, ctx) => {
+		if (normalizingAnthropicAliasSelection) return;
+		if (!event.model.provider.startsWith(ALIAS_PREFIX)) return;
+		await normalizeAnthropicAliasSelection(pi, store, ctx, () => normalizingAnthropicAliasSelection, (next) => {
+			normalizingAnthropicAliasSelection = next;
+		});
 		await updateBillingStatus(store, ctx);
 	});
 
@@ -1032,6 +1057,72 @@ async function updateBillingStatus(store: AccountStore, ctx: ExtensionContext): 
 	} catch (error) {
 		// Non-fatal; accounts may be mid-write.
 		console.warn("pi-multi-account: status update failed:", errorMessage(error));
+	}
+}
+
+async function normalizePersistedAnthropicAliasDefaultProvider(store: AccountStore): Promise<void> {
+	const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
+	} catch {
+		return;
+	}
+	const provider = typeof parsed.defaultProvider === "string" ? parsed.defaultProvider : undefined;
+	const accountName = provider?.startsWith(ALIAS_PREFIX) ? provider.slice(ALIAS_PREFIX.length) : undefined;
+	if (!accountName) return;
+	const anthropicState = await store.readProviderAsync("anthropic");
+	if (!anthropicState.accounts[accountName]) return;
+	let changed = false;
+	if (anthropicState.active !== accountName) {
+		await store.updateProviderAsync("anthropic", async (current) =>
+			current.accounts[accountName] ? { ...current, active: accountName } : current,
+		);
+	}
+	if (parsed.defaultProvider !== "anthropic") {
+		parsed.defaultProvider = "anthropic";
+		changed = true;
+	}
+	if (changed) {
+		await writeFile(settingsPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+	}
+}
+
+async function normalizeAnthropicAliasSelection(
+	pi: ExtensionAPI,
+	store: AccountStore,
+	ctx: ExtensionContext,
+	isNormalizing: () => boolean,
+	setNormalizing: (value: boolean) => void,
+): Promise<void> {
+	const model = ctx.model;
+	if (!model) return;
+	const provider = model.provider;
+	if (!provider.startsWith(ALIAS_PREFIX)) return;
+	const accountName = provider.slice(ALIAS_PREFIX.length);
+	if (!accountName) return;
+	const canonical = ctx.modelRegistry.find("anthropic", model.id);
+	if (!canonical) {
+		ctx.ui.notify(`Anthropic model ${model.id} is unavailable on the canonical provider.`, "error");
+		return;
+	}
+	const state = await store.readProviderAsync("anthropic");
+	if (!state.accounts[accountName]) {
+		ctx.ui.notify(`Anthropic account "${accountName}" is unavailable.`, "error");
+		return;
+	}
+	if (state.active !== accountName) {
+		await store.updateProviderAsync("anthropic", async (current) =>
+			current.accounts[accountName] ? { ...current, active: accountName } : current,
+		);
+	}
+	if (canonical.provider === model.provider) return;
+	if (isNormalizing()) return;
+	setNormalizing(true);
+	try {
+		await pi.setModel(canonical);
+	} finally {
+		setNormalizing(false);
 	}
 }
 

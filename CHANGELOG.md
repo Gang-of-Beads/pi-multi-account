@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+- Treat `anthropic-<account>` as a selection alias rather than the canonical persisted provider when possible: selecting one switches the active Anthropic account and normalizes the session model back to `anthropic/<model>`
+- Normalize a persisted `defaultProvider` alias in `~/.pi/agent/settings.json` back to `anthropic` during extension startup while keeping the targeted account active
+- Preserve the 0.4.2 re-login and background refresh behavior
+
 ## 0.4.2
 
 - Fix Anthropic OAuth refresh handling on Node 24 by always supplying a concrete `AbortSignal`
