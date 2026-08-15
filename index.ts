@@ -478,9 +478,9 @@ async function runOauthLogin(
 			active: parsed.name,
 			accounts: defineOwn(state.accounts, parsed.name, credential),
 		}));
-		await afterAccountMutation(ctx, store, aliases, refreshLoop);
+		await afterAccountMutation(ctx, store, adapterMap, aliases, refreshLoop);
 		ctx.ui.notify(
-			`${replaceExpected ? "Re-logged in" : "Logged in"} ${adapter.displayName} account "${parsed.name}". Active on the next turn.`,
+			`${replaceExpected ? "Re-logged in" : "Logged in"} ${adapter.displayName} account "${parsed.name}".`,
 			"info",
 		);
 	} catch (error) {
@@ -517,8 +517,8 @@ async function switchStoredAccount(
 	if (!adapter) throw new Error(`Unsupported account provider: ${state.adapter.id}`);
 	if (target === DEFAULT_PI_LOGIN_LABEL) {
 		await store.updateProvider(adapter.id, (current) => ({ ...current, active: undefined }));
-		await afterAccountMutation(ctx, store, aliases, refreshLoop);
-		ctx.ui.notify(`Using default Pi ${adapter.displayName} login on the next turn.`, "info");
+		await afterAccountMutation(ctx, store, adapterMap, aliases, refreshLoop);
+		ctx.ui.notify(`Using default Pi ${adapter.displayName} login now.`, "info");
 		return;
 	}
 	let switched = false;
@@ -531,8 +531,8 @@ async function switchStoredAccount(
 		ctx.ui.notify(`${adapter.displayName} account "${target}" was not found.`, "warning");
 		return;
 	}
-	await afterAccountMutation(ctx, store, aliases, refreshLoop);
-	ctx.ui.notify(`Activated ${adapter.displayName} account "${target}" for the next turn.`, "info");
+	await afterAccountMutation(ctx, store, adapterMap, aliases, refreshLoop);
+	ctx.ui.notify(`Activated ${adapter.displayName} account "${target}" now.`, "info");
 }
 
 async function removeStoredAccount(
@@ -578,13 +578,14 @@ async function removeStoredAccount(
 		ctx.ui.notify(`${adapter.displayName} account "${accountName}" was not found.`, "warning");
 		return;
 	}
-	await afterAccountMutation(ctx, store, aliases, refreshLoop);
+	await afterAccountMutation(ctx, store, adapterMap, aliases, refreshLoop);
 	ctx.ui.notify(`Removed ${adapter.displayName} account "${accountName}".`, "info");
 }
 
 async function afterAccountMutation(
 	ctx: ExtensionCommandContext,
 	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
 	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
 	refreshLoop: { refreshNow(): Promise<void> },
 ): Promise<void> {
@@ -594,7 +595,47 @@ async function afterAccountMutation(
 	} catch (error) {
 		ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
 	}
+	await syncCurrentProviderRuntimeIfPossible(ctx, store, adapterMap);
 	await updateBillingStatus(store, ctx);
+}
+
+async function syncCurrentProviderRuntimeIfPossible(
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+): Promise<void> {
+	const providerId = toSupportedProviderId(ctx.model?.provider);
+	if (!providerId) return;
+	const adapter = adapterMap.get(providerId);
+	if (!adapter) return;
+	const runtime = (ctx.modelRegistry as {
+		runtime?: {
+			setRuntimeApiKey?: (providerId: string, apiKey: string) => Promise<void>;
+			removeRuntimeApiKey?: (providerId: string) => Promise<void>;
+		};
+	}).runtime;
+	if (!runtime) return;
+
+	const state = await store.readProviderAsync(providerId);
+	if (!state.active) {
+		await runtime.removeRuntimeApiKey?.(providerId);
+		return;
+	}
+	let credential = state.accounts[state.active];
+	if (!credential) return;
+	if (credential.expires <= Date.now() + REFRESH_SKEW_MS) {
+		credential = await refreshStoredCredential(store, adapter, state.active, credential);
+	}
+	const auth = await adapter.oauth.toAuth(credential);
+	if (auth.apiKey) {
+		await runtime.setRuntimeApiKey?.(providerId, auth.apiKey);
+	}
+}
+
+function toSupportedProviderId(value: string | undefined): AccountProviderId | undefined {
+	return value === "anthropic" || value === "github-copilot" || value === "openai-codex"
+		? value
+		: undefined;
 }
 
 function isDefaultPiLoginName(value: string): boolean {
