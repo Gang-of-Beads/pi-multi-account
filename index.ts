@@ -64,6 +64,24 @@ const REFRESH_SKEW_MS = 5 * 60 * 1000;
 const BACKGROUND_REFRESH_POLL_MS = 60 * 1000;
 const BILLING_STATUS_KEY = "pi-multi-account";
 
+/**
+ * Runs currently in flight in this process, across every session.
+ *
+ * Anthropic *rotates* OAuth tokens: a successful refresh mints a new access
+ * token and invalidates the previous one, which the provider then reports as
+ * `"OAuth access token has been revoked."` rather than as an expiry. A long
+ * agentic turn resolves its credential once, at `before_agent_start`, so
+ * refreshing the account that turn is using pulls the token out from under an
+ * in-flight request and fails it mid-run.
+ *
+ * The background sweep therefore leaves the *active* account alone while any
+ * run is in flight. Idle accounts carry no in-flight request and stay eligible,
+ * which is the whole point of the sweep. Module scope, not session scope: pi
+ * loads this extension once per session, and a run in one session uses the same
+ * credential file as every other.
+ */
+let inFlightRunCount = 0;
+
 type StoredClaudeCredential = OAuthCredential & {
 	client?: "claude-code";
 	source?: "claude-code";
@@ -81,7 +99,28 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	if (!anthropicProvider) {
 		throw new Error("pi-multi-account: missing Anthropic provider adapter.");
 	}
-	const refreshLoop = createBackgroundRefreshLoop(store, providers);
+	const refreshLoop = acquireBackgroundRefreshLoop(store, providers);
+
+	// Bracket every run so the sweep can leave the credential it is using alone.
+	// Counted rather than boolean: one process hosts many sessions, and their
+	// runs overlap freely.
+	let runInFlight = false;
+	pi.on("agent_start", () => {
+		if (runInFlight) return;
+		runInFlight = true;
+		inFlightRunCount += 1;
+	});
+	const releaseRun = (): void => {
+		if (!runInFlight) return;
+		runInFlight = false;
+		inFlightRunCount = Math.max(0, inFlightRunCount - 1);
+	};
+	pi.on("agent_end", () => {
+		releaseRun();
+		// The run is over, so rotating now is safe and keeps a long idle stretch
+		// from starting with a stale token.
+		void refreshLoop.refreshNow();
+	});
 
 	// Canonicalize a persisted anthropic-<account> default provider back to the
 	// real `anthropic` provider before a session is restored. Alias providers are
@@ -177,6 +216,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	});
 
 	pi.on("session_shutdown", async () => {
+		// A session torn down mid-run must not leave the sweep permanently
+		// convinced that a run is still in flight.
+		releaseRun();
 		refreshLoop.stop();
 	});
 }
@@ -195,10 +237,47 @@ function createPatchedProviders(): AccountProviderAdapter[] {
 	}));
 }
 
+/**
+ * One sweep per process, shared by every session.
+ *
+ * pi loads this extension once per session, so a per-session timer would mean N
+ * sweeps of a single credential file. Each sweep can rotate tokens, and every
+ * needless rotation is another chance to invalidate a token some other session
+ * is about to use, so the sweep is deduplicated here and stopped only when the
+ * last session shuts down.
+ */
+let sharedRefreshLoop: BackgroundRefreshLoop | undefined;
+let refreshLoopUsers = 0;
+
+interface BackgroundRefreshLoop {
+	start(): void;
+	stop(): void;
+	refreshNow(): Promise<void>;
+}
+
+function acquireBackgroundRefreshLoop(
+	store: AccountStore,
+	providers: readonly AccountProviderAdapter[],
+): BackgroundRefreshLoop {
+	refreshLoopUsers += 1;
+	sharedRefreshLoop ??= createBackgroundRefreshLoop(store, providers);
+	const loop = sharedRefreshLoop;
+	return {
+		start: () => { loop.start(); },
+		refreshNow: () => loop.refreshNow(),
+		stop() {
+			refreshLoopUsers = Math.max(0, refreshLoopUsers - 1);
+			if (refreshLoopUsers > 0) return;
+			loop.stop();
+			sharedRefreshLoop = undefined;
+		},
+	};
+}
+
 function createBackgroundRefreshLoop(
 	store: AccountStore,
 	providers: readonly AccountProviderAdapter[],
-): { start(): void; stop(): void; refreshNow(): Promise<void> } {
+): BackgroundRefreshLoop {
 	let timer: NodeJS.Timeout | undefined;
 	let running: Promise<void> | undefined;
 
@@ -206,7 +285,9 @@ function createBackgroundRefreshLoop(
 		if (running) return running;
 		running = (async () => {
 			try {
-				await refreshExpiringAccounts(store, providers);
+				// Read the counter at sweep time, not at loop construction: a run may
+				// start or finish between ticks.
+				await refreshExpiringAccounts(store, providers, { protectActiveAccount: inFlightRunCount > 0 });
 			} catch (error) {
 				console.warn("pi-multi-account: background refresh failed:", errorMessage(error));
 			} finally {
@@ -218,7 +299,7 @@ function createBackgroundRefreshLoop(
 
 	return {
 		start() {
-			if (timer) clearInterval(timer);
+			if (timer) return;
 			timer = setInterval(() => {
 				void refreshNow();
 			}, BACKGROUND_REFRESH_POLL_MS);
@@ -233,9 +314,10 @@ function createBackgroundRefreshLoop(
 	};
 }
 
-async function refreshExpiringAccounts(
+export async function refreshExpiringAccounts(
 	store: AccountStore,
 	providers: readonly AccountProviderAdapter[],
+	options: { protectActiveAccount: boolean } = { protectActiveAccount: false },
 ): Promise<void> {
 	const now = Date.now();
 	for (const provider of providers) {
@@ -250,6 +332,12 @@ async function refreshExpiringAccounts(
 		}
 		for (const [accountName, credential] of Object.entries(state.accounts)) {
 			if (credential.expires > now + REFRESH_SKEW_MS) continue;
+			// Refreshing rotates the token and invalidates the current one. The
+			// active account is the one an in-flight run already resolved, so
+			// rotating it now would fail that run mid-flight with a revoked-token
+			// error. pi-accounts refreshes it at the next `before_agent_start`
+			// anyway, which is a safe moment because no request is outstanding.
+			if (options.protectActiveAccount && state.active === accountName) continue;
 			try {
 				await refreshStoredCredential(store, provider, accountName, credential, now);
 			} catch (error) {

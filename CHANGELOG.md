@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.4
+
+Fixes a regression introduced by the 0.4.2 background refresh.
+
+- Leave the **active** account alone while a run is in flight. Anthropic rotates
+  OAuth tokens: a refresh mints a new access token and invalidates the previous
+  one, which the API reports as `"OAuth access token has been revoked."` rather
+  than as an expiry. A long agentic turn resolves its credential once, at
+  `before_agent_start`, so the background sweep rotating that same account
+  pulled the token out from under an in-flight request and failed the run
+  mid-flight. Idle accounts are still swept, which was the point of the feature.
+- Refresh once per process instead of once per session. pi loads the extension
+  per session, so N sessions previously meant N sweeps of one credential file
+  and N chances to rotate a token another session was about to use.
+- Refresh immediately after `agent_end`, when no request is outstanding, so a
+  long idle stretch does not begin with a nearly expired token.
+
 ## 0.4.3
 
 - Treat `anthropic-<account>` as a selection alias rather than the canonical persisted provider when possible: selecting one switches the active Anthropic account and normalizes the session model back to `anthropic/<model>`
