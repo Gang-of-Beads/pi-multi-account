@@ -884,6 +884,16 @@ function registerAliasProvider(
 		auth: {
 			apiKey: {
 				name: `${id} account token`,
+				async check({ signal }) {
+					signal.throwIfAborted();
+					const state = await store.readProviderAsync("anthropic");
+					const credential = state.accounts[accountName];
+					if (!credential || credential.type !== "oauth") return undefined;
+					return {
+						type: "api_key",
+						source: `pi-accounts:${accountName}`,
+					};
+				},
 				async resolve({ signal }) {
 					signal.throwIfAborted();
 					const state = await store.readProviderAsync("anthropic");

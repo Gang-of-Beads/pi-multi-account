@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.6
+
+- Keep `anthropic-<account>` aliases visible in `/model` even when that account's refresh token is stale by adding a side-effect-free availability check that only verifies the stored account exists
+- Defer the actual refresh attempt to model use, where the shorter 0.4.5 sanitized re-login guidance is shown if the token is invalid
+
 ## 0.4.5
 
 - Sanitize Anthropic OAuth refresh failures before rethrowing them through pi's provider auth path, so `/model` availability checks and alias token resolution no longer surface the upstream full stack trace in normal invalid-refresh-token cases

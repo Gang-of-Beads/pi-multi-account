@@ -1,6 +1,6 @@
 {
   "name": "pi-multi-account",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
   "type": "module",
