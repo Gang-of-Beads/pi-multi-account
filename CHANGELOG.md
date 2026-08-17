@@ -2,6 +2,23 @@
 
 ## 0.4.9
 
+- Add `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0`, which makes an installation a
+  passive reader of the credential file: it still uses the stored accounts, and
+  pi-accounts still refreshes on demand when a token is actually needed, but it
+  never runs the unprompted sweep.
+
+  Anthropic rotates refresh tokens, so a refresh mints a new one and invalidates
+  the previous one. Two installations sharing a credential file — a host install
+  and a container handed a copy of it for testing — rotate each other's tokens
+  away, which the API reports as `"OAuth access token has been revoked."` rather
+  than as an expiry. Setting the variable on the secondary installation keeps
+  the primary one the sole owner of rotation.
+
+  The guard sits inside the refresh loop rather than at its call sites, so it
+  also covers the account menu and the import commands.
+
+## 0.4.9
+
 Internal restructure only — no behavior change.
 
 - Split the 1.6k-line `index.ts` into focused modules: `adapters.ts`, `refresh.ts`,

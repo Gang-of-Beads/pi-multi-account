@@ -12,6 +12,28 @@ export const REFRESH_SKEW_MS = 5 * 60 * 1000;
 const BACKGROUND_REFRESH_POLL_MS = 60 * 1000;
 
 /**
+ * Whether this installation may refresh tokens on its own schedule.
+ *
+ * Anthropic rotates refresh tokens: a refresh mints a new one and invalidates
+ * the previous one. Two installations sharing a credential file — a host
+ * install and a container handed a copy of it for testing, say — will therefore
+ * rotate each other's tokens away, which the API reports as
+ * `"OAuth access token has been revoked."` rather than as an expiry.
+ *
+ * `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0` makes an installation a passive
+ * reader: it still uses the stored accounts, and pi-accounts still refreshes on
+ * demand at `before_agent_start` when a token is actually needed, but it never
+ * runs the unprompted sweep. Set it on the secondary installation so the
+ * primary one stays the sole owner of rotation.
+ *
+ * Checked at call time rather than at construction so the guard covers every
+ * caller of the loop, including the account menu and the import commands.
+ */
+function backgroundRefreshEnabled(): boolean {
+	return process.env["PI_MULTI_ACCOUNT_BACKGROUND_REFRESH"] !== "0";
+}
+
+/**
  * Runs currently in flight in this process, across every session.
  *
  * Anthropic *rotates* OAuth tokens: a successful refresh mints a new access
@@ -81,6 +103,7 @@ function createBackgroundRefreshLoop(
 	let running: Promise<void> | undefined;
 
 	const refreshNow = async (): Promise<void> => {
+		if (!backgroundRefreshEnabled()) return;
 		if (running) return running;
 		running = (async () => {
 			try {
@@ -98,6 +121,7 @@ function createBackgroundRefreshLoop(
 
 	return {
 		start() {
+			if (!backgroundRefreshEnabled()) return;
 			if (timer) return;
 			timer = setInterval(() => {
 				void refreshNow();
