@@ -7,8 +7,8 @@
 
 It also includes:
 
-- automatic import of existing **Claude Code** sign-ins from this machine
-- per-account `anthropic-<account>` aliases in `/model`
+- automatic import of existing **Claude Code** sign-ins from this machine, with **you** choosing the account alias
+- per-account `anthropic-<account>` aliases in `/model` that **stay selected**, so `/model` and the footer always show which account a session talks to
 - automatic recovery when the active Anthropic account is deleted, so the entire `anthropic` provider does not disappear from `/model`
 
 ---
@@ -29,11 +29,12 @@ It also includes:
 | --- | --- |
 | `/accounts` | Manage named OAuth accounts for Anthropic / GitHub Copilot / OpenAI Codex and switch the active account |
 | `/sub-accounts` | Detect subscription-backed accounts already available on this machine (currently Claude Code) and show whether they are imported |
-| `/sub-import [name...]` | Import detected subscription accounts; defaults to names like `cc`, `cc-pro`, `cc-max`, but custom names are supported |
-| `anthropic-<name>` provider aliases | Every named Anthropic account appears directly in `/model`, e.g. `anthropic-personal`, `anthropic-work` |
+| `/sub-import [name...]` | Import detected subscription accounts; asks for a name per account interactively, or takes names as arguments |
+| `anthropic-<name>` provider aliases | Every named Anthropic account appears directly in `/model`, e.g. `anthropic-personal`, `anthropic-work`, and stays selected for the whole session |
+| `/accounts` → *Rename account* | Rename a stored account (e.g. an auto-imported `cc-max` → `work`); the alias and the current session follow the new name |
 | Claude subscription billing bridge | Adds the Claude Code style user-agent and billing header to Anthropic OAuth requests so usage is charged to the Claude subscription path |
 | Active-account auto-heal | If the current active Anthropic account is deleted, the next `session_start` automatically activates the first remaining account |
-| Status footer | Shows `anthropic: <active-account> · subscription billing` |
+| Status footer | Shows `anthropic-<account> · subscription billing` when a session is pinned to an alias, otherwise `anthropic: <active-account> · subscription billing` |
 
 ---
 
@@ -94,7 +95,7 @@ Recommended first-run flow:
    See which Claude Code subscription accounts are already detectable on this machine.
 
 2. `/sub-import`  
-   Import those accounts into the `pi-accounts` store. On an empty Anthropic account store, the extension will usually auto-import them as well.
+   Import those accounts into the `pi-accounts` store, naming each one yourself. On an empty Anthropic account store, an interactive session asks the same question on startup instead of importing silently.
 
 3. `/accounts`  
    Verify the active account and switch if needed.
@@ -102,13 +103,14 @@ Recommended first-run flow:
 4. `/model`  
    Choose either:
    - native `anthropic/...` models, which use the current active account
-   - or `anthropic-<name>/...`, which pins a specific named account
+   - or `anthropic-<name>/...`, which pins a specific named account for this session and keeps showing it in `/model` and the footer
 
 5. Check the footer  
    It should show:
 
    ```text
-   anthropic: <active-account> · subscription billing
+   (anthropic-work) claude-opus-5 · medium
+   anthropic-work · subscription billing
    ```
 
 ---
@@ -179,12 +181,15 @@ Imports detected subscription-backed accounts into the `pi-accounts` Anthropic s
 
 Behavior:
 
-- defaults to names such as `cc`, `cc-pro`, `cc-max`
-- supports custom names, for example:
+- with no arguments, asks for one alias per detected account (blank answer falls back to `cc`, `cc-pro`, `cc-max`)
+- supports custom names as arguments, for example:
 
 ```bash
 /sub-import claude-main claude-work
 ```
+
+- names are validated (`A-Za-z0-9._-`, max 64 chars) and `default` is reserved for pi's own login
+- accounts can be renamed later from `/accounts` → *Rename account*
 
 - reads Claude Code credentials in **read-only** mode
 - does **not** write anything back into Claude Code's own credential storage
@@ -237,6 +242,7 @@ The billing injection is skipped for:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run auto-import when the Anthropic account store is empty |
+| `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space separated account names used by first-run import, e.g. `work,personal`. When set, import runs immediately without asking |
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to disable `anthropic-<name>` provider aliases |
 | `ANTHROPIC_CLI_VERSION` | `2.1.160` | Overrides the Claude CLI version used in the billing header and user-agent |
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | Overrides the user-agent entrypoint |
@@ -259,18 +265,16 @@ The billing injection is skipped for:
 
 `anthropic-<name>` aliases are runtime providers that:
 
-- are registered during `session_start`
-- become visible in `/model`
-- replace the placeholder key with the account's real OAuth access token during `before_agent_start`
+- are registered during extension bootstrap (so `pi -p --model anthropic-work/...`, `--models` cycling, and session restore all resolve them) and re-synced on `session_start`
+- resolve their **own** account's OAuth credential per request, refreshing it under the shared account-store lock, independently of every other alias
+- hand pi the raw `sk-ant-oat...` token as the request api key, which is what puts pi's Anthropic adapter into Claude Code / OAuth mode (bearer auth, oauth betas, identity block, Claude Code tool names) and therefore keeps subscription billing working exactly like native `anthropic/...`
+- stay selected: choosing `anthropic-work/claude-opus-5` keeps that provider for the session and also points the stored active account at `work`, so `/accounts` agrees with the last explicit choice
 
-### Print-mode limitation
+A persisted `defaultProvider: "anthropic-work"` in `~/.pi/agent/settings.json` is kept as-is, and only rewritten to `anthropic` if that account no longer exists.
 
-Alias providers are registered during `session_start`, but `pi -p --model ...` resolves the model earlier.
+### Print mode
 
-So:
-
-- `pi -p --model anthropic-foo/...` is **not guaranteed to work**
-- in print mode, prefer native `anthropic/...` and set the active account in `/accounts` first
+`pi -p --model anthropic-work/claude-haiku-4-5` works: aliases exist before the model is resolved. First-run import in a non-TTY run does not prompt; it uses `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` when set, otherwise generated names.
 
 ---
 
@@ -341,12 +345,9 @@ Check:
 - whether the macOS Keychain contains `Claude Code-credentials...`
 - whether `~/.claude/.credentials.json` exists
 
-### 4) `pi -p` with an alias model fails
+### 4) `/model` switched me back to plain `anthropic`
 
-This is a known limitation. Use:
-
-- native `anthropic/...`
-- and set the active account first via `/accounts`
+That was the behavior of 0.4.3 – 0.4.7, which treated `anthropic-<name>` as a selection shortcut and normalized the session back to `anthropic/<model>`. Since 0.4.8 the alias stays selected. Upgrade, then `/reload`.
 
 ---
 
@@ -374,6 +375,12 @@ Also remember:
 cd ~/.pi/agent/extensions/pi-multi-account
 npm install
 npx tsc --noEmit
+```
+
+Account-import naming has a small runnable check:
+
+```bash
+npx jiti ./import-names.test.ts
 ```
 
 ### Local testing

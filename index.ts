@@ -18,11 +18,17 @@
  * Extras:
  *   - Auto-imports Claude Code accounts found in the macOS Keychain or
  *     `~/.claude/.credentials.json` when the account store is empty
- *     (disable with PI_MULTI_ACCOUNT_AUTO_IMPORT=0). Also available manually
- *     via `/sub-import` and `/sub-accounts` (subscription-agnostic names so
- *     other subscription clients can be added later).
+ *     (disable with PI_MULTI_ACCOUNT_AUTO_IMPORT=0). Interactive sessions ask
+ *     for the account alias instead of inventing `cc-max`/`cc-pro` names;
+ *     headless runs fall back to generated names, or to the comma-separated
+ *     PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES list. Also available manually via
+ *     `/sub-import` and `/sub-accounts` (subscription-agnostic names so other
+ *     subscription clients can be added later), and accounts can be renamed
+ *     later from `/accounts`.
  *   - Registers `anthropic-<name>` provider aliases so every named account
- *     shows up directly in the `/model` picker
+ *     shows up directly in the `/model` picker and stays selected as
+ *     `anthropic-<name>/<model>` — the footer and `/model` therefore keep
+ *     showing which account a session talks to
  *     (disable with PI_MULTI_ACCOUNT_ALIASES=0).
  */
 import type {
@@ -95,7 +101,6 @@ type ProviderModel = ProviderModelConfig & Record<string, unknown>;
 export default async function (pi: ExtensionAPI): Promise<void> {
 	const store = new AccountStore();
 	const providers = createPatchedProviders();
-	let normalizingAnthropicAliasSelection = false;
 	const anthropicProvider = providers.find((provider) => provider.id === "anthropic");
 	if (!anthropicProvider) {
 		throw new Error("pi-multi-account: missing Anthropic provider adapter.");
@@ -123,30 +128,40 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		void refreshLoop.refreshNow();
 	});
 
-	// Canonicalize a persisted anthropic-<account> default provider back to the
-	// real `anthropic` provider before a session is restored. Alias providers are
-	// a convenient /model entrypoint, but persisting them as the canonical
-	// provider makes startup depend on alias registration timing.
+	// A persisted `anthropic-<account>` defaultProvider is the point of the
+	// aliases, so it is kept. Only prune it when the account behind it is gone,
+	// which would otherwise leave startup pointing at a provider that can never
+	// be registered again.
 	try {
-		await normalizePersistedAnthropicAliasDefaultProvider(store);
+		await pruneStaleAliasDefaultProvider(store);
 	} catch (error) {
-		console.warn("pi-multi-account: settings default-provider normalization failed:", errorMessage(error));
+		console.warn("pi-multi-account: settings default-provider check failed:", errorMessage(error));
 	}
 
 	// Zero-friction bootstrap: if no Anthropic account has been added yet,
-	// import the accounts Claude Code already knows about. Runs inside the
-	// factory so pi-accounts' session_start sync sees them immediately.
+	// import the accounts Claude Code already knows about. Interactive sessions
+	// get to name the accounts themselves (deferred to session_start, where a UI
+	// context exists); headless runs import immediately with generated names, or
+	// with PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES when it is set.
+	let pendingImport: SubscriptionAccount[] = [];
 	if (process.env.PI_MULTI_ACCOUNT_AUTO_IMPORT !== "0") {
 		try {
 			const state = await store.readProviderAsync("anthropic");
 			if (Object.keys(state.accounts).length === 0 && !state.active) {
 				const detected = detectSubscriptionAccounts();
-				if (detected.length > 0) {
-					const imported = await importClaudeAccounts(store, detected, []);
+				const envNames = parseNameList(process.env.PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES);
+				if (detected.length > 0 && envNames.length === 0 && process.stdout.isTTY) {
+					// Ask for names on the first interactive session instead of
+					// inventing cc-max/cc-pro behind the user's back.
+					pendingImport = detected;
+				} else if (detected.length > 0) {
+					const imported = await importClaudeAccounts(store, detected, envNames);
 					if (imported.length > 0) {
 						console.log(
 							`pi-multi-account: auto-imported subscription account(s): ${imported.join(", ")}. ` +
-								"Manage with /accounts, import again with /sub-import (PI_MULTI_ACCOUNT_AUTO_IMPORT=0 disables this).",
+								"Rename or manage them with /accounts, import again with /sub-import " +
+								"(PI_MULTI_ACCOUNT_AUTO_IMPORT=0 disables this, " +
+								"PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES=work,personal names them).",
 						);
 					}
 				}
@@ -193,6 +208,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	// Status footer: show the active Anthropic account and billing mode.
 	pi.on("session_start", async (_event, ctx) => {
+		if (pendingImport.length > 0) {
+			const detected = pendingImport;
+			pendingImport = [];
+			try {
+				await runInteractiveImport(store, ctx, detected);
+			} catch (error) {
+				console.warn("pi-multi-account: interactive import failed:", errorMessage(error));
+			}
+		}
 		await refreshLoop.refreshNow();
 		refreshLoop.start();
 		try {
@@ -201,18 +225,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			console.error(`pi-multi-account: account providers were not loaded: ${errorMessage(error)}`);
 			ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
 		}
-		await normalizeAnthropicAliasSelection(pi, store, ctx, () => normalizingAnthropicAliasSelection, (next) => {
-			normalizingAnthropicAliasSelection = next;
-		});
+		await restoreAliasSelection(pi, store, ctx);
+		await syncActiveAccountToSelectedAlias(store, ctx);
 		await updateBillingStatus(store, ctx);
 	});
 
+	// Selecting `anthropic-<account>/<model>` stays selected: the alias resolves
+	// its own account credential per request, so the session keeps talking to the
+	// account the user picked and /model plus the footer keep showing which one.
+	// The stored active account is still pointed at it so the canonical
+	// `anthropic` provider and /accounts agree with the last explicit choice.
 	pi.on("model_select", async (event, ctx) => {
-		if (normalizingAnthropicAliasSelection) return;
-		if (!event.model.provider.startsWith(ALIAS_PREFIX)) return;
-		await normalizeAnthropicAliasSelection(pi, store, ctx, () => normalizingAnthropicAliasSelection, (next) => {
-			normalizingAnthropicAliasSelection = next;
-		});
+		if (event.model.provider.startsWith(ALIAS_PREFIX)) {
+			await syncActiveAccountToSelectedAlias(store, ctx);
+		}
 		await updateBillingStatus(store, ctx);
 	});
 
@@ -401,6 +427,7 @@ function registerAccountsCommandOverride(
 					? [
 						"Re-login existing account",
 						"Switch active account",
+						"Rename account",
 						"Remove account",
 					]
 					: []),
@@ -417,6 +444,9 @@ function registerAccountsCommandOverride(
 					return;
 				case "Switch active account":
 					await switchStoredAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
+					return;
+				case "Rename account":
+					await renameStoredAccount(pi, ctx, store, adapterMap, states, aliases, refreshLoop);
 					return;
 				case "Remove account":
 					await removeStoredAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
@@ -662,6 +692,89 @@ async function switchStoredAccount(
 	ctx.ui.notify(`Activated ${adapter.displayName} account "${target}" now.`, "info");
 }
 
+/**
+ * Rename a stored account, e.g. an auto-imported `cc-max` to `work`. The
+ * `anthropic-<name>` alias follows the new name after the alias re-sync, and a
+ * session currently pinned to the old alias is moved to the new one.
+ */
+async function renameStoredAccount(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	store: AccountStore,
+	adapterMap: ReadonlyMap<AccountProviderId, AccountProviderAdapter>,
+	states: readonly ProviderState[],
+	aliases: { sync(ctx: ExtensionContext): Promise<unknown> },
+	refreshLoop: { refreshNow(): Promise<void> },
+): Promise<void> {
+	const state = await selectProviderState(
+		ctx,
+		states,
+		"Select provider to rename in",
+		(candidate) => Object.keys(candidate.accounts).length > 0,
+	);
+	if (!state) {
+		ctx.ui.notify("No saved accounts to rename.", "info");
+		return;
+	}
+	const accountName = await selectStoredAccountName(
+		ctx,
+		state,
+		`Select ${state.adapter.displayName} account to rename`,
+	);
+	if (!accountName) return;
+	const adapter = adapterMap.get(state.adapter.id);
+	if (!adapter) throw new Error(`Unsupported account provider: ${state.adapter.id}`);
+
+	const answer = await ctx.ui.input(`New name for "${accountName}":`, accountName);
+	const requested = (answer ?? "").trim();
+	if (requested.length === 0 || requested === accountName) return;
+	const parsed = parseAccountName(requested);
+	if (!parsed.ok) {
+		ctx.ui.notify(parsed.error, "warning");
+		return;
+	}
+	if (isDefaultPiLoginName(parsed.name)) {
+		ctx.ui.notify('"default" is reserved for Pi\'s built-in login.', "warning");
+		return;
+	}
+
+	let failure: string | undefined;
+	await store.updateProvider(adapter.id, (current) => {
+		const credential = getOwnCredential(current.accounts, accountName);
+		if (!credential) {
+			failure = `${adapter.displayName} account "${accountName}" was not found.`;
+			return current;
+		}
+		if (getOwnCredential(current.accounts, parsed.name)) {
+			failure = `${adapter.displayName} account "${parsed.name}" already exists.`;
+			return current;
+		}
+		const accounts = defineOwnMap(current.accounts);
+		delete accounts[accountName];
+		return {
+			active: current.active === accountName ? parsed.name : current.active,
+			accounts: defineOwn(accounts, parsed.name, credential),
+		};
+	});
+	if (failure) {
+		ctx.ui.notify(failure, "warning");
+		return;
+	}
+
+	// Keep a session that is pinned to the old alias working by moving it to the
+	// renamed one; the old alias id is about to be unregistered.
+	const pinned = aliasAccountName(ctx.model?.provider);
+	const movedModelId = adapter.id === "anthropic" && pinned === accountName ? ctx.model?.id : undefined;
+
+	await afterAccountMutation(ctx, store, adapterMap, aliases, refreshLoop);
+
+	if (movedModelId) {
+		const renamedModel = ctx.modelRegistry.find(`${ALIAS_PREFIX}${parsed.name}`, movedModelId);
+		if (renamedModel) await pi.setModel(renamedModel);
+	}
+	ctx.ui.notify(`Renamed ${adapter.displayName} account "${accountName}" to "${parsed.name}".`, "info");
+}
+
 async function removeStoredAccount(
 	ctx: ExtensionCommandContext,
 	store: AccountStore,
@@ -890,6 +1003,14 @@ function registerAliasProvider(
 		name: id,
 		baseUrl: "https://api.anthropic.com",
 		headers: { "user-agent": buildUserAgent() },
+		// Hand pi the raw `sk-ant-oat…` access token as the apiKey rather than a
+		// pre-built Authorization header: pi's Anthropic adapter switches into
+		// Claude Code / OAuth mode by *inspecting the key* (isOAuthToken), and that
+		// mode is what sends Bearer auth, the `claude-code-20250219` +
+		// `oauth-2025-04-20` betas, the Claude Code identity system block and
+		// Claude-Code tool names. With a header-only credential the adapter takes
+		// the plain API-key path, so subscription billing injection never fires and
+		// the request is billed as pay-as-you-go extra usage.
 		auth: {
 			apiKey: {
 				name: `${id} account token`,
@@ -913,7 +1034,7 @@ function registerAliasProvider(
 					}
 					signal.throwIfAborted();
 					return {
-						auth: { headers: { Authorization: `Bearer ${credential.access}` } },
+						auth: { apiKey: credential.access },
 						source: `pi-accounts:${accountName}`,
 					};
 				},
@@ -1103,7 +1224,8 @@ async function healActiveAccount(store: AccountStore): Promise<void> {
 	});
 }
 
-async function importClaudeAccounts(
+/** Exported for tests; the extension entrypoint is the default export. */
+export async function importClaudeAccounts(
 	store: AccountStore,
 	detected: SubscriptionAccount[],
 	requestedNames: string[],
@@ -1182,11 +1304,16 @@ async function updateBillingStatus(store: AccountStore, ctx: ExtensionContext): 
 		const failedAccounts = Object.keys(state.accounts).filter((accountName) =>
 			refreshFailures.has(refreshFailureKey("anthropic", accountName)),
 		);
-		if (state.active) {
+		// Prefer the account bound to the selected alias: that is the account this
+		// session actually authenticates as, regardless of the stored active one.
+		const sessionAccount = aliasAccountName(ctx.model?.provider);
+		const account = sessionAccount ?? state.active;
+		if (account) {
 			const warning = failedAccounts.length > 0
 				? ` · ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"} need re-login`
 				: "";
-			ctx.ui.setStatus(BILLING_STATUS_KEY, `anthropic: ${state.active} · subscription billing${warning}`);
+			const label = sessionAccount ? `${ALIAS_PREFIX}${sessionAccount}` : `anthropic: ${account}`;
+			ctx.ui.setStatus(BILLING_STATUS_KEY, `${label} · subscription billing${warning}`);
 		} else {
 			ctx.ui.setStatus(BILLING_STATUS_KEY, undefined);
 		}
@@ -1195,7 +1322,12 @@ async function updateBillingStatus(store: AccountStore, ctx: ExtensionContext): 
 	}
 }
 
-async function normalizePersistedAnthropicAliasDefaultProvider(store: AccountStore): Promise<void> {
+/**
+ * Drop a persisted `anthropic-<account>` defaultProvider only when that account
+ * no longer exists. Alias selections are meant to survive restarts; a dangling
+ * alias is not, because nothing will ever register that provider id again.
+ */
+async function pruneStaleAliasDefaultProvider(store: AccountStore): Promise<void> {
 	const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
 	let parsed: Record<string, unknown>;
 	try {
@@ -1207,58 +1339,222 @@ async function normalizePersistedAnthropicAliasDefaultProvider(store: AccountSto
 	const accountName = provider?.startsWith(ALIAS_PREFIX) ? provider.slice(ALIAS_PREFIX.length) : undefined;
 	if (!accountName) return;
 	const anthropicState = await store.readProviderAsync("anthropic");
-	if (!anthropicState.accounts[accountName]) return;
-	let changed = false;
-	if (anthropicState.active !== accountName) {
-		await store.updateProviderAsync("anthropic", async (current) =>
-			current.accounts[accountName] ? { ...current, active: accountName } : current,
-		);
-	}
-	if (parsed.defaultProvider !== "anthropic") {
-		parsed.defaultProvider = "anthropic";
-		changed = true;
-	}
-	if (changed) {
-		await writeFile(settingsPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-	}
+	if (anthropicState.accounts[accountName]) return;
+	parsed.defaultProvider = "anthropic";
+	await writeFile(settingsPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
 }
 
-async function normalizeAnthropicAliasSelection(
+/**
+ * Point the stored active account at the alias this session selected, so
+ * `/accounts`, the canonical `anthropic` provider, and any other extension
+ * reading the store agree with the last explicit choice. The alias itself does
+ * not depend on this: it always resolves its own bound account.
+ */
+async function syncActiveAccountToSelectedAlias(store: AccountStore, ctx: ExtensionContext): Promise<void> {
+	const accountName = aliasAccountName(ctx.model?.provider);
+	if (!accountName) return;
+	const state = await store.readProviderAsync("anthropic");
+	if (!state.accounts[accountName]) {
+		ctx.ui.notify(`Anthropic account "${accountName}" is unavailable. Re-add it with /accounts.`, "error");
+		return;
+	}
+	if (state.active === accountName) return;
+	await store.updateProviderAsync("anthropic", async (current) =>
+		current.accounts[accountName] ? { ...current, active: accountName } : current,
+	);
+}
+
+/**
+ * Re-pin a session to the `anthropic-<account>` alias it is supposed to use.
+ *
+ * pi resolves the initial model (settings default, or the model restored from a
+ * session) *before* an alias provider can report configured auth: alias
+ * providers are registered natively, and native registration only marks a
+ * provider "configured" after an async availability refresh. pi therefore falls
+ * back to a plain `anthropic/...` model and the account pin is silently lost.
+ * Restoring it here, once aliases are synced, is what makes an alias selection
+ * survive restarts and `--continue`.
+ *
+ * An explicit `--model` / `--models` / `--provider` on the command line always
+ * wins, and a session already sitting on an alias is left alone.
+ */
+async function restoreAliasSelection(
 	pi: ExtensionAPI,
 	store: AccountStore,
 	ctx: ExtensionContext,
-	isNormalizing: () => boolean,
-	setNormalizing: (value: boolean) => void,
 ): Promise<void> {
-	const model = ctx.model;
-	if (!model) return;
-	const provider = model.provider;
-	if (!provider.startsWith(ALIAS_PREFIX)) return;
-	const accountName = provider.slice(ALIAS_PREFIX.length);
+	if (!ctx.model) return;
+	if (aliasAccountName(ctx.model.provider)) return;
+	if (hasCliModelOverride()) return;
+
+	// A session that already recorded a model selection owns its choice; only a
+	// session with no selection at all falls back to the settings default.
+	const recorded = recordedSessionModel(ctx);
+	if (recorded?.kind === "explicit") return;
+	const desired = recorded?.model ?? (await desiredAliasFromSettings());
+	if (!desired) return;
+	if (desired.provider === ctx.model.provider && desired.modelId === ctx.model.id) return;
+
+	const accountName = aliasAccountName(desired.provider);
 	if (!accountName) return;
-	const canonical = ctx.modelRegistry.find("anthropic", model.id);
-	if (!canonical) {
-		ctx.ui.notify(`Anthropic model ${model.id} is unavailable on the canonical provider.`, "error");
-		return;
-	}
 	const state = await store.readProviderAsync("anthropic");
-	if (!state.accounts[accountName]) {
-		ctx.ui.notify(`Anthropic account "${accountName}" is unavailable.`, "error");
+	if (!state.accounts[accountName]) return;
+
+	const model =
+		ctx.modelRegistry.find(desired.provider, desired.modelId) ??
+		ctx.modelRegistry.find(desired.provider, ctx.model.id);
+	if (!model) return;
+	await pi.setModel(model);
+}
+
+/** True when the user pinned a model on the command line. */
+function hasCliModelOverride(): boolean {
+	return process.argv
+		.slice(2)
+		.some((arg) => /^--(model|models|provider)(=|$)/.test(arg));
+}
+
+/**
+ * Latest model selection recorded in the session being restored.
+ *
+ * `alias` means the session was last pinned to an `anthropic-<account>` model
+ * and should go back to it. `explicit` means the last selection was a normal
+ * provider, which must be respected instead of re-applying a settings default.
+ */
+function recordedSessionModel(
+	ctx: ExtensionContext,
+): { kind: "alias"; model: { provider: string; modelId: string } } | { kind: "explicit" } | undefined {
+	let last: { provider: string; modelId: string } | undefined;
+	try {
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "model_change") last = { provider: entry.provider, modelId: entry.modelId };
+		}
+	} catch {
+		return undefined;
+	}
+	if (!last) return undefined;
+	return last.provider.startsWith(ALIAS_PREFIX) ? { kind: "alias", model: last } : { kind: "explicit" };
+}
+
+/** Alias model persisted as the settings default, if any. */
+async function desiredAliasFromSettings(): Promise<{ provider: string; modelId: string } | undefined> {
+	const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
+	try {
+		const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
+		const provider = typeof parsed.defaultProvider === "string" ? parsed.defaultProvider : undefined;
+		const modelId = typeof parsed.defaultModel === "string" ? parsed.defaultModel : undefined;
+		if (!provider?.startsWith(ALIAS_PREFIX) || !modelId) return undefined;
+		return { provider, modelId };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Account name bound to an `anthropic-<account>` provider id, if any. */
+function aliasAccountName(providerId: string | undefined): string | undefined {
+	if (!providerId || !providerId.startsWith(ALIAS_PREFIX)) return undefined;
+	const name = providerId.slice(ALIAS_PREFIX.length);
+	return name.length > 0 ? name : undefined;
+}
+
+/** Exported for tests; parses PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES-style lists. */
+export function parseNameList(value: string | undefined): string[] {
+	return (value ?? "")
+		.split(/[,\s]+/)
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+}
+
+/**
+ * Ask the user to name each detected subscription account before importing it.
+ * Falls back to generated names when there is no dialog-capable UI, or when the
+ * user leaves an answer empty.
+ */
+async function runInteractiveImport(
+	store: AccountStore,
+	ctx: ExtensionContext,
+	detected: SubscriptionAccount[],
+): Promise<void> {
+	const state = await store.readProviderAsync("anthropic");
+	if (Object.keys(state.accounts).length > 0 || state.active) return;
+
+	if (!ctx.hasUI) {
+		const imported = await importClaudeAccounts(store, detected, []);
+		if (imported.length > 0) {
+			ctx.ui.notify(`Imported subscription account(s): ${imported.join(", ")}. Rename them in /accounts.`, "info");
+		}
 		return;
 	}
-	if (state.active !== accountName) {
-		await store.updateProviderAsync("anthropic", async (current) =>
-			current.accounts[accountName] ? { ...current, active: accountName } : current,
+
+	const summary = detected
+		.map((account) => {
+			const tier = account.credentials.subscriptionType ? ` (${account.credentials.subscriptionType})` : "";
+			return `  ${account.label}${tier} — ${account.source}`;
+		})
+		.join("\n");
+	const confirmed = await ctx.ui.confirm(
+		"Import subscription accounts",
+		`Found ${detected.length} Claude Code account(s):\n${summary}\n\n` +
+			"Import them into pi as named Anthropic accounts? Each one shows up in /model as anthropic-<name>.",
+	);
+	if (!confirmed) {
+		ctx.ui.notify(
+			"Skipped. Import later with /sub-import, or set PI_MULTI_ACCOUNT_AUTO_IMPORT=0 to stop asking.",
+			"info",
+		);
+		return;
+	}
+
+	const names = await promptAccountNames(ctx, detected);
+	const imported = await importClaudeAccounts(store, detected, names);
+	if (imported.length > 0) {
+		ctx.ui.notify(
+			`Imported: ${imported.join(", ")}. Select one per session in /model (anthropic-${imported[0]}/…), ` +
+				"or rename it later in /accounts.",
+			"info",
 		);
 	}
-	if (canonical.provider === model.provider) return;
-	if (isNormalizing()) return;
-	setNormalizing(true);
-	try {
-		await pi.setModel(canonical);
-	} finally {
-		setNormalizing(false);
+}
+
+/** Prompt once per detected account for the alias name to store it under. */
+async function promptAccountNames(
+	ctx: ExtensionContext,
+	detected: SubscriptionAccount[],
+): Promise<string[]> {
+	const names: string[] = [];
+	const taken = new Set<string>();
+	for (const [index, account] of detected.entries()) {
+		const suggestion = baseImportName(account);
+		const tier = account.credentials.subscriptionType ? ` (${account.credentials.subscriptionType})` : "";
+		let name = "";
+		for (;;) {
+			const answer = await ctx.ui.input(
+				`Alias for ${account.label}${tier} [${index + 1}/${detected.length}] — blank uses "${suggestion}"`,
+				suggestion,
+			);
+			const candidate = (answer ?? "").trim();
+			if (candidate.length === 0) break; // blank or cancelled → generated name
+			const parsed = parseAccountName(candidate);
+			if (!parsed.ok) {
+				ctx.ui.notify(parsed.error, "warning");
+				continue;
+			}
+			if (isDefaultPiLoginName(parsed.name)) {
+				ctx.ui.notify('"default" is reserved for Pi\'s built-in login.', "warning");
+				continue;
+			}
+			if (taken.has(parsed.name)) {
+				ctx.ui.notify(`"${parsed.name}" was already used for another account.`, "warning");
+				continue;
+			}
+			name = parsed.name;
+			taken.add(parsed.name);
+			break;
+		}
+		names.push(name);
 	}
+	// importClaudeAccounts() generates a name for every empty slot.
+	return names;
 }
 
 function conciseRefreshFailure(error: unknown): string {

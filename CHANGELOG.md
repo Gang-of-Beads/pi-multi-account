@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.8
+
+Aliases are now first-class, and account naming is user-owned.
+
+- **Keep `anthropic-<account>` selected.** 0.4.3 – 0.4.7 treated the alias as a shortcut and immediately normalized the session back to `anthropic/<model>`, so `/model` and the footer lost track of which account was in use. The alias now stays selected for the whole session; `/model`, `--model`, model cycling, and a persisted `defaultProvider` alias all keep the account visible, e.g. `(anthropic-work) claude-opus-5`.
+- **Fix subscription billing for alias requests.** Aliases used to resolve to a pre-built `Authorization: Bearer` header, leaving the request api key empty. pi's Anthropic adapter decides between Claude Code / OAuth mode and plain API-key mode by *inspecting the key* (`sk-ant-oat...`), so the header-only form silently took the API-key path: no Claude Code identity block, no `claude-code-20250219` / `oauth-2025-04-20` betas, no Claude Code tool names, and therefore no billing-header injection — alias traffic was billed as pay-as-you-go extra usage. Aliases now hand pi the raw access token, so they behave exactly like native `anthropic/...`.
+- **Ask for the account alias on first-run import** instead of inventing `cc-max` / `cc-pro`. Interactive sessions confirm the detected Claude Code accounts and prompt for one name each (blank keeps the generated name); non-TTY runs are unchanged, and `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES=work,personal` names them without any prompt. `/sub-import` with no arguments now prompts as well.
+- **Add `/accounts` → Rename account**, so an already-imported `cc-max` can become `work`. The alias provider and a session pinned to the old alias both follow the new name.
+- Footer status reports the account the session actually authenticates as (`anthropic-work · subscription billing`), instead of always reporting the stored active account.
+- A persisted `defaultProvider: "anthropic-<name>"` is preserved and only rewritten to `anthropic` when that account is gone.
+- Add a runnable naming check: `npx jiti ./import-names.test.ts`.
+
 ## 0.4.7
 
 - Stop writing recurring background-refresh failures to the transcript; retain a deduplicated in-memory failure state instead

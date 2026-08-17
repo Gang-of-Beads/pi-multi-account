@@ -12,5 +12,5 @@
 		"verbatimModuleSyntax": true,
 		"types": ["node"]
 	},
-	"include": ["index.ts", "billing.ts", "claude-credentials.ts"]
+	"include": ["index.ts", "billing.ts", "subscription-credentials.ts", "import-names.test.ts"]
 }
