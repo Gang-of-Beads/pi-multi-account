@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.7
+
+- Stop writing recurring background-refresh failures to the transcript; retain a deduplicated in-memory failure state instead
+- Surface a compact native footer summary such as `2 accounts need re-login`
+- Fix the missing refresh-failure bookkeeping helpers introduced during the 0.4.6 UI cleanup
+
 ## 0.4.6
 
 - Keep `anthropic-<account>` aliases visible in `/model` even when that account's refresh token is stale by adding a side-effect-free availability check that only verifies the stored account exists

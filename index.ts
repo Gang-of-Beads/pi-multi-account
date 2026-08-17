@@ -63,6 +63,7 @@ const ALIAS_PREFIX = "anthropic-";
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 const BACKGROUND_REFRESH_POLL_MS = 60 * 1000;
 const BILLING_STATUS_KEY = "pi-multi-account";
+const refreshFailures = new Map<string, string>();
 
 /**
  * Runs currently in flight in this process, across every session.
@@ -293,8 +294,8 @@ function createBackgroundRefreshLoop(
 				// Read the counter at sweep time, not at loop construction: a run may
 				// start or finish between ticks.
 				await refreshExpiringAccounts(store, providers, { protectActiveAccount: inFlightRunCount > 0 });
-			} catch (error) {
-				console.warn("pi-multi-account: background refresh failed:", errorMessage(error));
+			} catch {
+				// Background refresh is best-effort; request-time auth still reports actionable errors.
 			} finally {
 				running = undefined;
 			}
@@ -329,10 +330,7 @@ export async function refreshExpiringAccounts(
 		let state;
 		try {
 			state = await store.readProviderAsync(provider.id);
-		} catch (error) {
-			console.warn(
-				`pi-multi-account: failed to read ${provider.id} accounts for background refresh: ${errorMessage(error)}`,
-			);
+		} catch {
 			continue;
 		}
 		for (const [accountName, credential] of Object.entries(state.accounts)) {
@@ -345,13 +343,24 @@ export async function refreshExpiringAccounts(
 			if (options.protectActiveAccount && state.active === accountName) continue;
 			try {
 				await refreshStoredCredential(store, provider, accountName, credential, now);
+				clearRefreshFailure(provider.id, accountName);
 			} catch (error) {
-				console.warn(
-					`pi-multi-account: ${provider.id} account "${accountName}" background refresh failed: ${errorMessage(error)}`,
-				);
+				recordRefreshFailure(provider.id, accountName, error);
 			}
 		}
 	}
+}
+
+function refreshFailureKey(providerId: string, accountName: string): string {
+	return `${providerId}:${accountName}`;
+}
+
+function recordRefreshFailure(providerId: string, accountName: string, error: unknown): void {
+	refreshFailures.set(refreshFailureKey(providerId, accountName), conciseRefreshFailure(error));
+}
+
+function clearRefreshFailure(providerId: string, accountName: string): void {
+	refreshFailures.delete(refreshFailureKey(providerId, accountName));
 }
 
 function preserveCredentialMetadata<T extends OAuthCredential>(
@@ -950,7 +959,9 @@ async function refreshCredential(
 		}
 		try {
 			refreshed = preserveCredentialMetadata(latest, await oauth.refresh(latest, new AbortController().signal));
+			clearRefreshFailure("anthropic", accountName);
 		} catch (error) {
+			recordRefreshFailure("anthropic", accountName, error);
 			throw sanitizeRefreshError("anthropic", accountName, error);
 		}
 		return {
@@ -980,7 +991,9 @@ async function refreshStoredCredential(
 		}
 		try {
 			refreshed = await provider.oauth.refresh(latest, new AbortController().signal);
+			clearRefreshFailure(provider.id, accountName);
 		} catch (error) {
+			recordRefreshFailure(provider.id, accountName, error);
 			throw sanitizeRefreshError(provider.id, accountName, error);
 		}
 		return {
@@ -1166,14 +1179,19 @@ function isClaudeCodeCredential(value: unknown): value is StoredClaudeCredential
 async function updateBillingStatus(store: AccountStore, ctx: ExtensionContext): Promise<void> {
 	try {
 		const state = await store.readProviderAsync("anthropic");
+		const failedAccounts = Object.keys(state.accounts).filter((accountName) =>
+			refreshFailures.has(refreshFailureKey("anthropic", accountName)),
+		);
 		if (state.active) {
-			ctx.ui.setStatus(BILLING_STATUS_KEY, `anthropic: ${state.active} · subscription billing`);
+			const warning = failedAccounts.length > 0
+				? ` · ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"} need re-login`
+				: "";
+			ctx.ui.setStatus(BILLING_STATUS_KEY, `anthropic: ${state.active} · subscription billing${warning}`);
 		} else {
 			ctx.ui.setStatus(BILLING_STATUS_KEY, undefined);
 		}
-	} catch (error) {
+	} catch {
 		// Non-fatal; accounts may be mid-write.
-		console.warn("pi-multi-account: status update failed:", errorMessage(error));
 	}
 }
 
