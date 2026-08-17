@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { AccountStore } from "@narumitw/pi-accounts/src/account-store.ts";
 import { InMemoryAccountStorageBackend } from "@narumitw/pi-accounts/src/storage.ts";
-import { importClaudeAccounts, parseNameList } from "./index.ts";
+import { parseNameList } from "./names.ts";
+import { importClaudeAccounts } from "./subscription-import.ts";
 
 const detected = (label: string, tier: string) => ({
 	client: "claude-code" as const,

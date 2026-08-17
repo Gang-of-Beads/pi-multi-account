@@ -1,6 +1,6 @@
 {
   "name": "pi-multi-account",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
   "type": "module",
@@ -24,9 +24,19 @@
   },
   "files": [
     "index.ts",
+    "accounts-menu.ts",
+    "adapters.ts",
+    "aliases.ts",
     "billing.ts",
+    "errors.ts",
+    "names.ts",
+    "refresh.ts",
+    "session-state.ts",
+    "subscription-import.ts",
     "subscription-credentials.ts",
+    "import-names.test.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],

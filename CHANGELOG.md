@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.9
+
+Internal restructure only — no behavior change.
+
+- Split the 1.6k-line `index.ts` into focused modules: `adapters.ts`, `refresh.ts`,
+  `aliases.ts`, `accounts-menu.ts`, `subscription-import.ts`, `session-state.ts`,
+  `names.ts`, `errors.ts`. `index.ts` is now wiring only (~200 lines), and
+  `registerBillingLayer()` moved next to the billing code it configures.
+- Remove duplicated logic and dead code: the alias-specific `refreshCredential()`
+  duplicated `refreshStoredCredential()` (now one `refreshAccountCredential()`
+  used by the sweep, the alias auth path, and the runtime sync), the unused
+  `anthropicProvider` local is gone, provider adapters are built once per process
+  instead of per session, and `sanitizeRefreshError()` no longer re-wraps an
+  already sanitized error.
+- The refresh-failure map is private to `refresh.ts` behind
+  `accountsNeedingRelogin()`, and the in-flight run counter behind
+  `markRunStarted()` / `markRunFinished()`.
+- Checked with `tsc --noEmit --noUnusedLocals --noUnusedParameters`.
+
 ## 0.4.8
 
 Aliases are now first-class, and account naming is user-owned.

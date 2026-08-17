@@ -14,6 +14,8 @@
  * request identity so plan billing applies.
  */
 import { createHash } from "node:crypto";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { errorMessage } from "./errors.ts";
 
 const BILLING_SALT = "59cf53e54c78";
 
@@ -222,4 +224,27 @@ export function injectBillingHeader(payload: unknown): AnthropicPayload | undefi
 	}
 
 	return p;
+}
+
+export function registerBillingLayer(pi: ExtensionAPI): void {
+	// Full Claude Code user-agent for the native `anthropic` provider. pi
+	// sends a bare `claude-cli/<version>` which fails plan-billing validation;
+	// the `(external, <entrypoint>)` form is required for subscription billing.
+	// (Alias providers set their own user-agent in aliases.ts.)
+	pi.registerProvider("anthropic", {
+		headers: { "user-agent": buildUserAgent() },
+	});
+
+	// Inject the x-anthropic-billing-header system block. Only fires for
+	// Claude-model OAuth payloads that already carry the "You are Claude
+	// Code…" identity block — plain API-key and Copilot requests are skipped.
+	pi.on("before_provider_request", (event) => {
+		try {
+			const updated = injectBillingHeader(event.payload);
+			if (updated) return updated;
+		} catch (error) {
+			console.warn("pi-multi-account: billing header injection failed:", errorMessage(error));
+		}
+		return undefined;
+	});
 }

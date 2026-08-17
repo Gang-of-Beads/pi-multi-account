@@ -371,10 +371,25 @@ Also remember:
 
 ## Development
 
+### Repository layout
+
+| File | Responsibility |
+| --- | --- |
+| `index.ts` | Extension entrypoint: wiring and event handlers only |
+| `adapters.ts` | pi-accounts provider adapters, patched for Node 24 signals and credential metadata |
+| `refresh.ts` | Background refresh sweep, single-credential refresh, refresh-failure state |
+| `aliases.ts` | `anthropic-<account>` provider aliases shown by `/model` |
+| `accounts-menu.ts` | `/accounts`: login, re-login, switch, rename, remove |
+| `subscription-import.ts` | `/sub-accounts`, `/sub-import`, first-run interactive import |
+| `session-state.ts` | Which account a session uses, alias restore, footer status |
+| `billing.ts` | Claude Code user-agent and `x-anthropic-billing-header` injection |
+| `names.ts`, `errors.ts` | Account-name and error-shaping helpers |
+| `subscription-credentials.ts` | Claude Code credential discovery (Keychain, `~/.claude`) |
+
 ```bash
 cd ~/.pi/agent/extensions/pi-multi-account
 npm install
-npx tsc --noEmit
+npx tsc --noEmit --noUnusedLocals --noUnusedParameters
 ```
 
 Account-import naming has a small runnable check:
