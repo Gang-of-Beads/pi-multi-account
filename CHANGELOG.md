@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.5
+
+- Sanitize Anthropic OAuth refresh failures before rethrowing them through pi's provider auth path, so `/model` availability checks and alias token resolution no longer surface the upstream full stack trace in normal invalid-refresh-token cases
+- Keep the actionable error short, e.g. `invalid_grant (refresh token not found or invalid). Re-login this account in /accounts.`
+
 ## 0.4.4
 
 Fixes a regression introduced by the 0.4.2 background refresh.

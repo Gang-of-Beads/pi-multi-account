@@ -228,11 +228,16 @@ function createPatchedProviders(): AccountProviderAdapter[] {
 		...provider,
 		oauth: {
 			...provider.oauth,
-			refresh: async (credential, signal) =>
-				preserveCredentialMetadata(
-					credential,
-					await provider.oauth.refresh(credential, signal ?? new AbortController().signal),
-				),
+			refresh: async (credential, signal) => {
+				try {
+					return preserveCredentialMetadata(
+						credential,
+						await provider.oauth.refresh(credential, signal ?? new AbortController().signal),
+					);
+				} catch (error) {
+					throw sanitizeRefreshError(provider.id, undefined, error);
+				}
+			},
 		},
 	}));
 }
@@ -721,7 +726,7 @@ async function syncCurrentProviderRuntimeIfPossible(
 	if (!providerId) return;
 	const adapter = adapterMap.get(providerId);
 	if (!adapter) return;
-	const runtime = (ctx.modelRegistry as {
+	const runtime = (ctx.modelRegistry as unknown as {
 		runtime?: {
 			setRuntimeApiKey?: (providerId: string, apiKey: string) => Promise<void>;
 			removeRuntimeApiKey?: (providerId: string) => Promise<void>;
@@ -866,6 +871,7 @@ function registerAliasProvider(
 	if (!baseProvider) throw new Error("Pi's built-in Anthropic provider is unavailable.");
 	const aliasModels = models.map((model) => ({
 		...model,
+		api: model.api!,
 		provider: id,
 		baseUrl: "https://api.anthropic.com",
 	}));
@@ -895,7 +901,12 @@ function registerAliasProvider(
 			},
 		},
 		getModels: () => aliasModels,
-		...(baseProvider.filterModels ? { filterModels: (providerModels, credential) => baseProvider.filterModels?.(providerModels as any, credential) } : {}),
+		...(baseProvider.filterModels
+			? {
+					filterModels: (providerModels, credential) =>
+						baseProvider.filterModels?.(providerModels as any, credential) ?? providerModels,
+			  }
+			: {}),
 		stream: (model, context, options) => baseProvider.stream(model as any, context, options as any),
 		streamSimple: (model, context, options) => baseProvider.streamSimple(model as any, context, options as any),
 	});
@@ -927,7 +938,11 @@ async function refreshCredential(
 			refreshed = latest;
 			return state;
 		}
-		refreshed = preserveCredentialMetadata(latest, await oauth.refresh(latest, new AbortController().signal));
+		try {
+			refreshed = preserveCredentialMetadata(latest, await oauth.refresh(latest, new AbortController().signal));
+		} catch (error) {
+			throw sanitizeRefreshError("anthropic", accountName, error);
+		}
 		return {
 			...state,
 			accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
@@ -953,7 +968,11 @@ async function refreshStoredCredential(
 			refreshed = latest;
 			return state;
 		}
-		refreshed = await provider.oauth.refresh(latest, new AbortController().signal);
+		try {
+			refreshed = await provider.oauth.refresh(latest, new AbortController().signal);
+		} catch (error) {
+			throw sanitizeRefreshError(provider.id, accountName, error);
+		}
 		return {
 			...state,
 			accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
@@ -1212,6 +1231,43 @@ async function normalizeAnthropicAliasSelection(
 	} finally {
 		setNormalizing(false);
 	}
+}
+
+function conciseRefreshFailure(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	const payloadMatch = message.match(/body=(\{.*\})/s);
+	if (payloadMatch) {
+		try {
+			const payload = JSON.parse(payloadMatch[1]) as { error?: unknown; error_description?: unknown };
+			if (typeof payload.error === "string" && typeof payload.error_description === "string") {
+				return `${payload.error} (${payload.error_description})`;
+			}
+			if (typeof payload.error === "string") return payload.error;
+		} catch {
+			// Fall through to plain-text cleanup.
+		}
+	}
+
+	if (/invalid_grant/i.test(message) && /Refresh token not found or invalid/i.test(message)) {
+		return "invalid_grant (refresh token not found or invalid)";
+	}
+
+	return message
+		.replace(/; stack=.*$/s, "")
+		.replace(/^Anthropic token refresh request failed\.\s*/i, "")
+		.replace(/^Token exchange request failed\.\s*/i, "")
+		.replace(/^OAuth refresh failed\.\s*/i, "")
+		.replace(/\burl=https?:\/\/[^;]+;?\s*/gi, "")
+		.replace(/\bdetails=/gi, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function sanitizeRefreshError(providerId: string, accountName: string | undefined, error: unknown): Error {
+	const subject = accountName ? `${providerId} account "${accountName}"` : `${providerId} account`;
+	const detail = conciseRefreshFailure(error) || "refresh failed";
+	const guidance = /invalid_grant/i.test(detail) ? " Re-login this account in /accounts." : "";
+	return new Error(`${subject} refresh failed: ${detail}.${guidance}`.replace(/\.\s*\./g, "."));
 }
 
 function errorMessage(error: unknown): string {
