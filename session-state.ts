@@ -85,26 +85,23 @@ export async function pruneStaleAliasDefaultProvider(store: AccountStore): Promi
 }
 
 /**
- * Point the stored active account at the alias this session selected, so
- * `/accounts`, the canonical `anthropic` provider, and any other extension
- * reading the store agree with the last explicit choice. The alias itself does
- * not depend on this: it always resolves its own bound account.
+ * Report which account a session is pinned to, without changing anything.
+ *
+ * This deliberately does not write the stored `active` account. An alias
+ * resolves its own bound account, so the write bought the choosing session
+ * nothing -- while deciding, for every *other* session, which account the
+ * canonical `anthropic` provider sends. One session opening on a pinned model
+ * could move the whole machine, and an unrelated session mid-request could then
+ * fail with a 401 from an account it never chose.
  */
-export async function syncActiveAccountToSelectedAlias(store: AccountStore, ctx: ExtensionContext): Promise<void> {
+export async function reportPinnedAliasAccount(store: AccountStore, ctx: ExtensionContext): Promise<void> {
 	const accountName = aliasAccountName(ctx.model?.provider);
 	if (!accountName) return;
 	const state = await store.readProviderAsync("anthropic");
 	if (!state.accounts[accountName]) {
 		logError("alias.account_missing", { account: accountName });
 		ctx.ui.notify(`Anthropic account "${accountName}" is unavailable. Re-add it with /accounts.`, "error");
-		return;
 	}
-	if (state.active === accountName) return;
-	storeObserver("anthropic").expectSelfChange(`select alias ${accountName}`);
-	logInfo("active.switched", { from: state.active, to: accountName, cause: "alias selected in this session" });
-	await store.updateProviderAsync("anthropic", async (current) =>
-		current.accounts[accountName] ? { ...current, active: accountName } : current,
-	);
 }
 
 /**

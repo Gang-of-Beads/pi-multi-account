@@ -53,7 +53,7 @@ import {
 	healActiveAccount,
 	pruneStaleAliasDefaultProvider,
 	restoreAliasSelection,
-	syncActiveAccountToSelectedAlias,
+	reportPinnedAliasAccount,
 	updateBillingStatus,
 } from "./session-state.ts";
 import {
@@ -258,7 +258,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
 		}
 		await restoreAliasSelection(pi, store, ctx);
-		await syncActiveAccountToSelectedAlias(store, ctx);
+		await reportPinnedAliasAccount(store, ctx);
 		await updateBillingStatus(store, ctx);
 		reportForeignStoreChanges(ctx);
 	});
@@ -288,7 +288,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			source: event.source,
 		});
 		if (event.model.provider.startsWith(ALIAS_PREFIX)) {
-			await syncActiveAccountToSelectedAlias(store, ctx);
+			await reportPinnedAliasAccount(store, ctx);
 		}
 		await updateBillingStatus(store, ctx);
 		reportForeignStoreChanges(ctx);
