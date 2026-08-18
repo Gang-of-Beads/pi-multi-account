@@ -49,7 +49,6 @@ import {
 	markRunStarted,
 } from "./refresh.ts";
 import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
-import { registerAccountLogCommand } from "./log-command.ts";
 import {
 	healActiveAccount,
 	pruneStaleAliasDefaultProvider,
@@ -237,8 +236,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Subscription import commands (subscription-import.ts).
 	registerClaudeImportCommands(pi, store, aliases, refreshLoop);
 
-	// /account-log: the debug log, its path, and a live account health check.
-	registerAccountLogCommand(pi, store);
 
 	// Per-session startup: finish a deferred import, sync aliases, re-pin the
 	// session's account, then report it in the footer.

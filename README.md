@@ -194,36 +194,6 @@ Behavior:
 - reads Claude Code credentials in **read-only** mode
 - does **not** write anything back into Claude Code's own credential storage
 
-### `/account-log`
-
-Diagnostics for the credential lifecycle.
-
-```
-/account-log          # last 20 log lines, plus the log path and level
-/account-log 100      # last 100 lines
-/account-log check    # ask Anthropic whether each stored token is still accepted
-```
-
-`check` sends one request per account for a model that does not exist, so
-authentication is validated (`401` = revoked, `429` = rate limited, `404` = the
-token works) without spending any tokens.
-
-The log itself lives at `~/.pi/agent/pi-multi-account.log`, one JSON object per
-line, and answers the questions a 401 raises after the fact:
-
-| Event | Meaning |
-| --- | --- |
-| `session.account` | Which account a session resolved, and from where (pinned alias vs stored active) |
-| `store.changed` | The account store changed; `origin=foreign` means another process did it |
-| `refresh.due` / `refresh.succeeded` / `refresh.failed` | Token rotation, with before/after fingerprints |
-| `refresh.superseded` | Another writer had already replaced the token this process was holding |
-| `credential.suspect` / `response.rejected` | The provider rejected a token, with the request id |
-| `active.switched` / `model.selected` | Account and model changes made by this session |
-
-Tokens are never written to the log; each one appears as an 8-character SHA-256
-fingerprint, which is enough to see that a token changed — or that two
-installations hold the same one — without leaking the secret.
-
 ### `/anthropic-account-providers`
 
 Force-resyncs the `anthropic-<name>` provider aliases shown in `/model`.
@@ -288,6 +258,35 @@ The billing injection is skipped for:
 ### Account storage
 
 - `~/.pi/agent/pi-accounts.json`
+
+### Debug log
+
+`~/.pi/agent/pi-multi-account.log`, one JSON object per line. No command reads
+it; it is a file, meant for `tail -f` and for answering the questions a
+surprise 401 raises after the fact.
+
+| Event | Meaning |
+| --- | --- |
+| `session.account` | Which account a session resolved, and from where (pinned alias vs stored active) |
+| `store.changed` | The account store changed; `origin=foreign` means another process did it |
+| `refresh.due` / `refresh.succeeded` / `refresh.failed` | Token rotation, with before/after fingerprints |
+| `refresh.superseded` | Another writer had already replaced the token this process was holding |
+| `refresh.backoff` | A credential that needs a re-login, being left alone until `retryAt` |
+| `credential.suspect` / `response.rejected` | The provider rejected a token, with the request id |
+| `active.switched` / `model.selected` | Account and model changes made by this session |
+
+Tokens are never written to the log; each one appears as an 8-character SHA-256
+fingerprint, which is enough to see that a token changed — or that two
+installations hold the same one — without leaking the secret.
+
+A failure that keeps repeating is logged once, not once per attempt: the retry
+itself backs off (a minute, doubling to fifteen; six hours for an
+`invalid_grant` that only a re-login can fix), and a stored credential that
+changes — someone re-logged in — is retried immediately.
+
+```bash
+tail -f ~/.pi/agent/pi-multi-account.log
+```
 
 ### Auto-import sources
 
@@ -417,7 +416,6 @@ Also remember:
 | `session-state.ts` | Which account a session uses, alias restore, footer status |
 | `debug-log.ts` | JSONL debug log: token fingerprints, never tokens |
 | `store-watch.ts` | Detects account-store changes made by other processes |
-| `log-command.ts` | `/account-log`: read the log, probe every stored account |
 | `billing.ts` | Claude Code user-agent and `x-anthropic-billing-header` injection |
 | `names.ts`, `errors.ts` | Account-name and error-shaping helpers |
 | `subscription-credentials.ts` | Claude Code credential discovery (Keychain, `~/.claude`) |
@@ -432,9 +430,9 @@ Runnable checks:
 
 ```bash
 npx jiti ./import-names.test.ts     # account-import naming
-npx jiti ./store-watch.test.ts      # foreign-writer detection, log formatting
-npx jiti ./revoked-refresh.test.ts  # rejected tokens refresh on 401, not on expiry
-npx jiti ./wiring.test.ts           # event/command wiring + the log sink really writes
+npx jiti ./store-watch.test.ts      # foreign-writer detection
+npx jiti ./revoked-refresh.test.ts  # 401-driven refresh, backoff, log-once
+npx jiti ./wiring.test.ts           # event wiring + the log sink really writes
 ```
 
 ### Local testing

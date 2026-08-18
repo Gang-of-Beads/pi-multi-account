@@ -42,8 +42,9 @@ await extension(pi);
 for (const event of ["after_provider_response", "before_agent_start", "model_select", "agent_start", "agent_end"]) {
 	assert.ok(events.includes(event), `extension must subscribe to ${event}`);
 }
-assert.ok(commands.includes("account-log"), "/account-log must be registered");
 assert.ok(commands.includes("accounts"), "/accounts must still be registered");
+// Diagnostics are a log file, not a user-facing surface.
+assert.ok(!commands.includes("account-log"), "the debug log must not add a command");
 
 const written = readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
 const startup = written.find((entry) => entry.event === "extension.loaded");

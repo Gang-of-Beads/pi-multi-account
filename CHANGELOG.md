@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.1
+
+Fixes what the 0.5.0 log immediately exposed about itself.
+
+- **A repeating failure is logged once, not once per attempt.** The failure was
+  recorded both inside the store lock and again by the sweep that called it, so
+  every failed refresh produced two identical lines.
+
+- **Refresh backoff.** A dead refresh token (`invalid_grant`) was retried every
+  60 seconds forever, because the account never stops being expired. Retries now
+  back off — a minute doubling to fifteen for failures that might be transient,
+  six hours for one that only a re-login can fix — and a stored credential that
+  changed (someone re-logged in, here or elsewhere) is retried immediately.
+
+- **No `/account-log` command.** The log is a file; reading it is `tail`'s job.
+  The account probe went with it.
+
 ## 0.5.0
 
 Makes credential failures diagnosable, and stops a rejected token from failing
@@ -31,9 +48,7 @@ every request until something happens to rotate it.
   the same one. `PI_MULTI_ACCOUNT_LOG=debug` adds per-request lines,
   `PI_MULTI_ACCOUNT_LOG=0` disables it, `PI_MULTI_ACCOUNT_LOG_FILE` moves it.
 
-- **`/account-log`** shows the tail of that log, and `/account-log check` asks
-  Anthropic whether each stored token is still accepted — using a model id that
-  does not exist, so authentication is validated without spending tokens.
+  (0.5.0 also added an `/account-log` command; 0.5.1 removed it again.)
 
 ## 0.4.9
 

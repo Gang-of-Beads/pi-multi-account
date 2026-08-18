@@ -1,6 +1,6 @@
 {
   "name": "pi-multi-account",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,6 @@
     "billing.ts",
     "debug-log.ts",
     "errors.ts",
-    "log-command.ts",
     "names.ts",
     "refresh.ts",
     "session-state.ts",

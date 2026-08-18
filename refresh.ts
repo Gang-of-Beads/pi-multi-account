@@ -5,7 +5,7 @@
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import type { AccountProviderAdapter } from "@narumitw/pi-accounts/src/oauth.ts";
-import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
+import { credentialSummary, fingerprint, logDebug, logError, logInfo } from "./debug-log.ts";
 import { conciseRefreshFailure, errorMessage, sanitizeRefreshError } from "./errors.ts";
 import { storeObserver } from "./store-watch.ts";
 
@@ -215,6 +215,19 @@ async function refreshExpiringAccounts(
 				});
 				continue;
 			}
+			// A credential whose refresh keeps failing is retried on a backoff
+			// instead of every tick: an `invalid_grant` account cannot be fixed by
+			// trying again, only by a re-login.
+			const blockedUntil = refreshBlockedUntil(provider.id, accountName, credential, now);
+			if (blockedUntil !== undefined) {
+				logDebug("refresh.backoff", {
+					provider: provider.id,
+					account: accountName,
+					detail: refreshFailureDetail(provider.id, accountName),
+					retryAt: new Date(blockedUntil).toISOString(),
+				});
+				continue;
+			}
 			// Cleared before the attempt: a refresh that fails records its own
 			// failure, and re-marking on every tick would hide a genuine recovery.
 			suspectCredentials.delete(suspectKey(provider.id, accountName));
@@ -228,34 +241,130 @@ async function refreshExpiringAccounts(
 				await refreshAccountCredential(store, provider, accountName, credential, now, { force: suspect });
 				clearRefreshFailure(provider.id, accountName);
 			} catch (error) {
-				recordRefreshFailure(provider.id, accountName, error);
+				// `refreshAccountCredential` already recorded this failure inside the
+				// store lock; recording it again here is what logged every failure twice.
+				logDebug("refresh.sweep_attempt_failed", { provider: provider.id, account: accountName });
 			}
 		}
 	}
 }
 
 /**
- * Accounts whose last refresh failed, with a one-line reason.
+ * Accounts whose last refresh failed, with a one-line reason and when to retry.
  *
  * Module scope so every session shows the same state, and so a recurring
  * background failure is reported once in the footer instead of being written to
  * each transcript.
  */
-const refreshFailures = new Map<string, string>();
+interface RefreshFailure {
+	detail: string;
+	attempts: number;
+	firstFailedAt: number;
+	nextAttemptAt: number;
+	/** No amount of retrying fixes this one; only a re-login does. */
+	permanent: boolean;
+	/** The credential that failed, so a re-login can be detected and retried at once. */
+	credential: string | undefined;
+}
+
+const refreshFailures = new Map<string, RefreshFailure>();
+
+/** First retry delay for a failure that may be transient (network, 5xx, rate limit). */
+const RETRY_BASE_MS = 60 * 1000;
+const RETRY_MAX_MS = 15 * 60 * 1000;
+/**
+ * Retry interval for a credential that needs a re-login.
+ *
+ * Not "never": the user may re-login in another session or another
+ * installation, and a stored credential that changed is retried immediately
+ * anyway (see `refreshBlockedUntil`). This is only the floor for the hopeless
+ * case, so a dead account costs one request every few hours instead of one per
+ * minute — which is what turned a single dead account into a log full of
+ * identical `invalid_grant` lines.
+ */
+const RELOGIN_RETRY_MS = 6 * 60 * 60 * 1000;
 
 function refreshFailureKey(providerId: string, accountName: string): string {
 	return `${providerId}:${accountName}`;
 }
 
-function recordRefreshFailure(providerId: string, accountName: string, error: unknown): void {
+/** An `invalid_grant` refresh token is gone for good; retrying cannot bring it back. */
+function isPermanentFailure(detail: string): boolean {
+	return /invalid_grant|invalid_request|unauthorized_client/i.test(detail);
+}
+
+function recordRefreshFailure(
+	providerId: string,
+	accountName: string,
+	error: unknown,
+	credential?: { access?: string },
+	now = Date.now(),
+): void {
+	const key = refreshFailureKey(providerId, accountName);
 	const detail = conciseRefreshFailure(error);
-	refreshFailures.set(refreshFailureKey(providerId, accountName), detail);
-	logError("refresh.failed", { provider: providerId, account: accountName, detail });
+	const previous = refreshFailures.get(key);
+	const repeated = previous !== undefined && previous.detail === detail;
+	const attempts = repeated ? previous.attempts + 1 : 1;
+	const permanent = isPermanentFailure(detail);
+	const backoff = permanent
+		? RELOGIN_RETRY_MS
+		: Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS);
+	const failure: RefreshFailure = {
+		detail,
+		attempts,
+		firstFailedAt: repeated ? previous.firstFailedAt : now,
+		nextAttemptAt: now + backoff,
+		permanent,
+		credential: fingerprint(credential?.access),
+	};
+	refreshFailures.set(key, failure);
+
+	const fields = {
+		provider: providerId,
+		account: accountName,
+		detail,
+		attempts,
+		permanent,
+		nextAttempt: new Date(failure.nextAttemptAt).toISOString(),
+		...(permanent ? { action: "re-login this account in /accounts" } : {}),
+	};
+	// The same failure, over and over, is one fact — not one fact per minute.
+	if (repeated) logDebug("refresh.failed_again", fields);
+	else logError("refresh.failed", fields);
 }
 
 function clearRefreshFailure(providerId: string, accountName: string): void {
 	if (!refreshFailures.delete(refreshFailureKey(providerId, accountName))) return;
 	logInfo("refresh.recovered", { provider: providerId, account: accountName });
+}
+
+/**
+ * How long an account is being left alone after a failed refresh, if at all.
+ *
+ * A credential that differs from the one that failed is always retried at once:
+ * that is what a re-login, or a refresh by another installation, looks like from
+ * here.
+ */
+function refreshBlockedUntil(
+	providerId: string,
+	accountName: string,
+	credential: { access?: string },
+	now: number,
+): number | undefined {
+	const failure = refreshFailures.get(refreshFailureKey(providerId, accountName));
+	if (!failure) return undefined;
+	if (failure.credential !== fingerprint(credential.access)) return undefined;
+	return failure.nextAttemptAt > now ? failure.nextAttemptAt : undefined;
+}
+
+/** Why an account needs attention, for the footer and `/account-log`. */
+export function refreshFailureDetail(providerId: string, accountName: string): string | undefined {
+	return refreshFailures.get(refreshFailureKey(providerId, accountName))?.detail;
+}
+
+/** Clear all recorded failures. Tests only. */
+export function resetRefreshFailuresForTesting(): void {
+	refreshFailures.clear();
 }
 
 /** Names of the given provider's accounts that need a re-login. */
@@ -318,7 +427,7 @@ export async function refreshAccountCredential(
 				after: credentialSummary(refreshed),
 			});
 		} catch (error) {
-			recordRefreshFailure(provider.id, accountName, error);
+			recordRefreshFailure(provider.id, accountName, error, latest, now);
 			throw sanitizeRefreshError(provider.id, accountName, error);
 		}
 		return {

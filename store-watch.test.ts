@@ -2,7 +2,6 @@ process.env.PI_MULTI_ACCOUNT_LOG = "0";
 
 import assert from "node:assert/strict";
 import { describeChange, diffSnapshots, drainForeignChanges, snapshotProviderState, StoreObserver } from "./store-watch.ts";
-import { formatLogLine, verdictForStatus } from "./log-command.ts";
 
 const credential = (access: string, refresh = `${access}-r`) => ({ access, refresh, expires: 1 });
 
@@ -62,20 +61,4 @@ assert.equal(
 	"active account changed merchant → personal",
 );
 
-// A revoked token must not be mistaken for a healthy one: the probe asks for a
-// model that does not exist, so 404 proves authentication succeeded.
-assert.equal(verdictForStatus(401), "revoked");
-assert.equal(verdictForStatus(403), "revoked");
-assert.equal(verdictForStatus(429), "rate_limited");
-assert.equal(verdictForStatus(404), "ok");
-assert.equal(verdictForStatus(200), "ok");
-assert.equal(verdictForStatus(503), "unknown");
-
-// Log lines stay readable when shown in the session.
-assert.equal(
-	formatLogLine(JSON.stringify({ ts: "2026-08-18T05:42:23.312Z", event: "refresh.due", pid: 7, rt: "ab12", account: "personal" })),
-	"05:42:23 [7/ab12] refresh.due account=personal",
-);
-assert.equal(formatLogLine("not json"), "not json");
-
-console.log("ok: store watch + log formatting");
+console.log("ok: store watch");

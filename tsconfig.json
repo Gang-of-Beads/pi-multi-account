@@ -12,5 +12,5 @@
 		"verbatimModuleSyntax": true,
 		"types": ["node"]
 	},
-	"include": ["index.ts", "adapters.ts", "aliases.ts", "accounts-menu.ts", "billing.ts", "errors.ts", "names.ts", "refresh.ts", "session-state.ts", "subscription-import.ts", "subscription-credentials.ts", "debug-log.ts", "store-watch.ts", "log-command.ts", "import-names.test.ts", "store-watch.test.ts", "revoked-refresh.test.ts", "wiring.test.ts"]
+	"include": ["index.ts", "adapters.ts", "aliases.ts", "accounts-menu.ts", "billing.ts", "errors.ts", "names.ts", "refresh.ts", "session-state.ts", "subscription-import.ts", "subscription-credentials.ts", "debug-log.ts", "store-watch.ts", "import-names.test.ts", "store-watch.test.ts", "revoked-refresh.test.ts", "wiring.test.ts"]
 }
