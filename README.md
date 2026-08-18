@@ -194,6 +194,36 @@ Behavior:
 - reads Claude Code credentials in **read-only** mode
 - does **not** write anything back into Claude Code's own credential storage
 
+### `/account-log`
+
+Diagnostics for the credential lifecycle.
+
+```
+/account-log          # last 20 log lines, plus the log path and level
+/account-log 100      # last 100 lines
+/account-log check    # ask Anthropic whether each stored token is still accepted
+```
+
+`check` sends one request per account for a model that does not exist, so
+authentication is validated (`401` = revoked, `429` = rate limited, `404` = the
+token works) without spending any tokens.
+
+The log itself lives at `~/.pi/agent/pi-multi-account.log`, one JSON object per
+line, and answers the questions a 401 raises after the fact:
+
+| Event | Meaning |
+| --- | --- |
+| `session.account` | Which account a session resolved, and from where (pinned alias vs stored active) |
+| `store.changed` | The account store changed; `origin=foreign` means another process did it |
+| `refresh.due` / `refresh.succeeded` / `refresh.failed` | Token rotation, with before/after fingerprints |
+| `refresh.superseded` | Another writer had already replaced the token this process was holding |
+| `credential.suspect` / `response.rejected` | The provider rejected a token, with the request id |
+| `active.switched` / `model.selected` | Account and model changes made by this session |
+
+Tokens are never written to the log; each one appears as an 8-character SHA-256
+fingerprint, which is enough to see that a token changed — or that two
+installations hold the same one — without leaking the secret.
+
 ### `/anthropic-account-providers`
 
 Force-resyncs the `anthropic-<name>` provider aliases shown in `/model`.
@@ -244,6 +274,9 @@ The billing injection is skipped for:
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run auto-import when the Anthropic account store is empty |
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space separated account names used by first-run import, e.g. `work,personal`. When set, import runs immediately without asking |
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to disable `anthropic-<name>` provider aliases |
+| `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary installation that shares the credential file, so only one installation rotates tokens |
+| `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` adds per-request credential resolution; `0`/`off` disables the debug log |
+| `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | Where the debug log is written |
 | `ANTHROPIC_CLI_VERSION` | `2.1.160` | Overrides the Claude CLI version used in the billing header and user-agent |
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | Overrides the user-agent entrypoint |
 | `ANTHROPIC_USER_AGENT` | auto-generated | Fully overrides the Anthropic user-agent |
@@ -382,6 +415,9 @@ Also remember:
 | `accounts-menu.ts` | `/accounts`: login, re-login, switch, rename, remove |
 | `subscription-import.ts` | `/sub-accounts`, `/sub-import`, first-run interactive import |
 | `session-state.ts` | Which account a session uses, alias restore, footer status |
+| `debug-log.ts` | JSONL debug log: token fingerprints, never tokens |
+| `store-watch.ts` | Detects account-store changes made by other processes |
+| `log-command.ts` | `/account-log`: read the log, probe every stored account |
 | `billing.ts` | Claude Code user-agent and `x-anthropic-billing-header` injection |
 | `names.ts`, `errors.ts` | Account-name and error-shaping helpers |
 | `subscription-credentials.ts` | Claude Code credential discovery (Keychain, `~/.claude`) |
@@ -392,10 +428,13 @@ npm install
 npx tsc --noEmit --noUnusedLocals --noUnusedParameters
 ```
 
-Account-import naming has a small runnable check:
+Runnable checks:
 
 ```bash
-npx jiti ./import-names.test.ts
+npx jiti ./import-names.test.ts     # account-import naming
+npx jiti ./store-watch.test.ts      # foreign-writer detection, log formatting
+npx jiti ./revoked-refresh.test.ts  # rejected tokens refresh on 401, not on expiry
+npx jiti ./wiring.test.ts           # event/command wiring + the log sink really writes
 ```
 
 ### Local testing

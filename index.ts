@@ -39,9 +39,17 @@ import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerBillingLayer } from "./billing.ts";
+import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 import { parseNameList } from "./names.ts";
-import { acquireBackgroundRefreshLoop, markRunFinished, markRunStarted } from "./refresh.ts";
+import {
+	acquireBackgroundRefreshLoop,
+	markCredentialSuspect,
+	markRunFinished,
+	markRunStarted,
+} from "./refresh.ts";
+import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
+import { registerAccountLogCommand } from "./log-command.ts";
 import {
 	healActiveAccount,
 	pruneStaleAliasDefaultProvider,
@@ -62,6 +70,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	anthropicAdapter(); // Fail fast if pi-accounts stops shipping the Anthropic adapter.
 	const refreshLoop = acquireBackgroundRefreshLoop(store, providers);
 
+	// One startup line per process makes it possible to tell which installation
+	// wrote the lines that follow — the host or a container sharing this home
+	// directory — which is the difference between "my token expired" and "another
+	// installation rotated my token away".
+	logInfo("extension.loaded", {
+		cwd: process.cwd(),
+		home: process.env.HOME,
+		logLevel: logLevel(),
+		backgroundRefresh: process.env.PI_MULTI_ACCOUNT_BACKGROUND_REFRESH !== "0",
+		aliases: process.env.PI_MULTI_ACCOUNT_ALIASES !== "0",
+	});
+
+	/**
+	 * Tell the user when another process changed the shared account store.
+	 *
+	 * Silence here is what made a switched active account look like a random
+	 * failure: the session kept its model label and started billing (or failing)
+	 * as a different account.
+	 */
+	const reportForeignStoreChanges = (ctx: { ui: { notify: (message: string, level: "info" | "warning" | "error") => void } }): void => {
+		for (const change of drainForeignChanges()) {
+			ctx.ui.notify(
+				`Anthropic accounts: ${describeChange(change)} (by another process). See ${logPath()}.`,
+				change.kind === "active_account" ? "warning" : "info",
+			);
+		}
+	};
+
 	// Bracket every run so the sweep can leave the credential it is using alone.
 	// Counted rather than boolean: one process hosts many sessions, and their
 	// runs overlap freely.
@@ -76,6 +112,50 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		runInFlight = false;
 		markRunFinished();
 	};
+	/**
+	 * Treat a rejected token as a reason to refresh, not just as a failed request.
+	 *
+	 * A revoked Anthropic token dies *before* its stored expiry — that is what
+	 * happens when a second installation refreshes the same rotating credential —
+	 * so the expiry-driven sweep has no reason to touch it and every subsequent
+	 * request fails the same way. Marking the account here makes the next sweep
+	 * refresh it regardless of the stored expiry, so it either heals itself or
+	 * reports an honest "needs re-login".
+	 */
+	pi.on("after_provider_response", (event, ctx) => {
+		const providerId = ctx.model?.provider;
+		if (!providerId) return;
+		if (providerId !== "anthropic" && !providerId.startsWith(ALIAS_PREFIX)) return;
+		if (event.status < 400) {
+			logDebug("response.ok", { provider: providerId, status: event.status });
+			return;
+		}
+		void (async () => {
+			try {
+				const state = await store.readProviderAsync("anthropic");
+				const account = providerId.startsWith(ALIAS_PREFIX)
+					? providerId.slice(ALIAS_PREFIX.length)
+					: state.active;
+				logError("response.rejected", {
+					provider: providerId,
+					status: event.status,
+					account,
+					requestId: event.headers["request-id"] ?? event.headers["x-request-id"],
+					credential: account ? credentialSummary(state.accounts[account]) : undefined,
+				});
+				if (event.status !== 401 || !account) return;
+				markCredentialSuspect("anthropic", account, `provider answered 401 for ${providerId}`);
+				ctx.ui.notify(
+					`Anthropic account "${account}" was rejected (401). Refreshing its token; ` +
+						`if this repeats, re-login that account in /accounts.`,
+					"warning",
+				);
+			} catch (error) {
+				logError("response.rejected_handler_failed", { detail: errorMessage(error) });
+			}
+		})();
+	});
+
 	pi.on("agent_end", () => {
 		releaseRun();
 		// The run is over, so rotating now is safe and keeps a long idle stretch
@@ -157,6 +237,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Subscription import commands (subscription-import.ts).
 	registerClaudeImportCommands(pi, store, aliases, refreshLoop);
 
+	// /account-log: the debug log, its path, and a live account health check.
+	registerAccountLogCommand(pi, store);
+
 	// Per-session startup: finish a deferred import, sync aliases, re-pin the
 	// session's account, then report it in the footer.
 	pi.on("session_start", async (_event, ctx) => {
@@ -180,6 +263,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		await restoreAliasSelection(pi, store, ctx);
 		await syncActiveAccountToSelectedAlias(store, ctx);
 		await updateBillingStatus(store, ctx);
+		reportForeignStoreChanges(ctx);
+	});
+
+	// Every turn re-reads the store, so this is where a session finds out that
+	// something outside it changed which account it is about to talk to.
+	pi.on("before_agent_start", async (_event, ctx) => {
+		try {
+			storeObserver("anthropic").observe(await store.readProviderAsync("anthropic"), "turn.start");
+		} catch (error) {
+			logError("turn.store_read_failed", { detail: errorMessage(error) });
+		}
+		await updateBillingStatus(store, ctx);
+		reportForeignStoreChanges(ctx);
+		return undefined;
 	});
 
 	// Selecting `anthropic-<account>/<model>` stays selected: the alias resolves
@@ -188,10 +285,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// The stored active account is still pointed at it so the canonical
 	// `anthropic` provider and /accounts agree with the last explicit choice.
 	pi.on("model_select", async (event, ctx) => {
+		logInfo("model.selected", {
+			model: `${event.model.provider}/${event.model.id}`,
+			previous: event.previousModel ? `${event.previousModel.provider}/${event.previousModel.id}` : undefined,
+			source: event.source,
+		});
 		if (event.model.provider.startsWith(ALIAS_PREFIX)) {
 			await syncActiveAccountToSelectedAlias(store, ctx);
 		}
 		await updateBillingStatus(store, ctx);
+		reportForeignStoreChanges(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {

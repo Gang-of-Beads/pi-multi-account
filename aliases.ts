@@ -10,7 +10,10 @@ import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicAdapter } from "./adapters.ts";
 import { buildUserAgent } from "./billing.ts";
-import { REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
+import { credentialSummary, logDebug, logError } from "./debug-log.ts";
+import { errorMessage } from "./errors.ts";
+import { isCredentialSuspect, REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
+import { storeObserver } from "./store-watch.ts";
 
 export const ALIAS_PREFIX = "anthropic-";
 
@@ -140,12 +143,43 @@ function registerAliasProvider(
 				async resolve({ signal }) {
 					signal.throwIfAborted();
 					const state = await store.readProviderAsync("anthropic");
+					storeObserver("anthropic").observe(state, `alias.resolve:${accountName}`);
 					let credential = state.accounts[accountName];
-					if (!credential || credential.type !== "oauth") return undefined;
-					if (credential.expires <= Date.now() + REFRESH_SKEW_MS) {
-						credential = await refreshAccountCredential(store, anthropicAdapter(), accountName, credential);
+					if (!credential || credential.type !== "oauth") {
+						logError("alias.unresolved", { provider: id, account: accountName, reason: "no stored oauth credential" });
+						return undefined;
+					}
+					// A rejected token is refreshed even before it expires; otherwise every
+					// request on this alias keeps sending the token the provider revoked.
+					const suspect = isCredentialSuspect("anthropic", accountName);
+					if (suspect || credential.expires <= Date.now() + REFRESH_SKEW_MS) {
+						try {
+							credential = await refreshAccountCredential(
+								store,
+								anthropicAdapter(),
+								accountName,
+								credential,
+								Date.now(),
+								{ force: suspect },
+							);
+						} catch (error) {
+							logError("alias.refresh_failed", {
+								provider: id,
+								account: accountName,
+								suspect,
+								detail: errorMessage(error),
+							});
+							throw error;
+						}
 					}
 					signal.throwIfAborted();
+					// The one line that answers "which account did this request bill to?".
+					logDebug("request.credential", {
+						provider: id,
+						account: accountName,
+						storedActive: state.active,
+						credential: credentialSummary(credential),
+					});
 					return {
 						auth: { apiKey: credential.access },
 						source: `pi-accounts:${accountName}`,

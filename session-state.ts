@@ -7,7 +7,10 @@ import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ALIAS_PREFIX, aliasAccountName } from "./aliases.ts";
+import { credentialSummary, logError, logInfo } from "./debug-log.ts";
+import { errorMessage } from "./errors.ts";
 import { accountsNeedingRelogin } from "./refresh.ts";
+import { storeObserver } from "./store-watch.ts";
 
 const BILLING_STATUS_KEY = "pi-multi-account";
 
@@ -28,8 +31,19 @@ export async function updateBillingStatus(store: AccountStore, ctx: ExtensionCon
 		} else {
 			ctx.ui.setStatus(BILLING_STATUS_KEY, undefined);
 		}
-	} catch {
+		// The account a session bills to is otherwise invisible once the footer
+		// scrolls past, and it is the first thing to check after a surprise 401.
+		logInfo("session.account", {
+			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+			pinnedAccount: sessionAccount,
+			storedActive: state.active,
+			resolvedAccount: account,
+			needsRelogin: failedAccounts,
+			credential: account ? credentialSummary(state.accounts[account]) : undefined,
+		});
+	} catch (error) {
 		// Non-fatal; accounts may be mid-write.
+		logError("session.account_status_failed", { detail: errorMessage(error) });
 	}
 }
 
@@ -81,10 +95,13 @@ export async function syncActiveAccountToSelectedAlias(store: AccountStore, ctx:
 	if (!accountName) return;
 	const state = await store.readProviderAsync("anthropic");
 	if (!state.accounts[accountName]) {
+		logError("alias.account_missing", { account: accountName });
 		ctx.ui.notify(`Anthropic account "${accountName}" is unavailable. Re-add it with /accounts.`, "error");
 		return;
 	}
 	if (state.active === accountName) return;
+	storeObserver("anthropic").expectSelfChange(`select alias ${accountName}`);
+	logInfo("active.switched", { from: state.active, to: accountName, cause: "alias selected in this session" });
 	await store.updateProviderAsync("anthropic", async (current) =>
 		current.accounts[accountName] ? { ...current, active: accountName } : current,
 	);
@@ -129,7 +146,18 @@ export async function restoreAliasSelection(
 	const model =
 		ctx.modelRegistry.find(desired.provider, desired.modelId) ??
 		ctx.modelRegistry.find(desired.provider, ctx.model.id);
-	if (!model) return;
+	if (!model) {
+		logError("alias.restore_failed", {
+			wanted: `${desired.provider}/${desired.modelId}`,
+			reason: "model not registered",
+		});
+		return;
+	}
+	logInfo("alias.restored", {
+		from: `${ctx.model.provider}/${ctx.model.id}`,
+		to: `${model.provider}/${model.id}`,
+		source: recorded?.kind ?? "settings default",
+	});
 	await pi.setModel(model);
 }
 

@@ -5,7 +5,9 @@
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import type { AccountProviderAdapter } from "@narumitw/pi-accounts/src/oauth.ts";
-import { conciseRefreshFailure, sanitizeRefreshError } from "./errors.ts";
+import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
+import { conciseRefreshFailure, errorMessage, sanitizeRefreshError } from "./errors.ts";
+import { storeObserver } from "./store-watch.ts";
 
 /** Refresh a credential this long before it actually expires. */
 export const REFRESH_SKEW_MS = 5 * 60 * 1000;
@@ -59,6 +61,45 @@ export function markRunFinished(): void {
 }
 
 /**
+ * Accounts whose stored token the provider has rejected.
+ *
+ * A revoked token is not an expired one: Anthropic invalidates the whole token
+ * family when a second installation refreshes with a rotated-away refresh
+ * token, and the credential this process holds dies *before* the `expires`
+ * timestamp it was stored with. The expiry-driven sweep therefore never sees a
+ * reason to act, and every request keeps failing with a 401 until something
+ * else happens to rotate the account.
+ *
+ * A 401 marks the account here instead, which makes the next sweep refresh it
+ * regardless of the stored expiry. When the refresh token is still good the
+ * account heals itself before the next turn; when it is not, the refresh
+ * failure is recorded and surfaced as "needs re-login" rather than as an
+ * unexplained 401.
+ */
+const suspectCredentials = new Set<string>();
+
+function suspectKey(providerId: string, accountName: string): string {
+	return `${providerId}:${accountName}`;
+}
+
+/** Mark an account's stored credential as rejected by the provider. */
+export function markCredentialSuspect(providerId: string, accountName: string, reason: string): void {
+	if (suspectCredentials.has(suspectKey(providerId, accountName))) return;
+	suspectCredentials.add(suspectKey(providerId, accountName));
+	logInfo("credential.suspect", { provider: providerId, account: accountName, reason });
+}
+
+/** Whether an account is currently marked as rejected. Tests and status use this. */
+export function isCredentialSuspect(providerId: string, accountName: string): boolean {
+	return suspectCredentials.has(suspectKey(providerId, accountName));
+}
+
+/** Clear all suspicion. Tests only. */
+export function resetSuspectCredentialsForTesting(): void {
+	suspectCredentials.clear();
+}
+
+/**
  * One sweep per process, shared by every session.
  *
  * pi loads this extension once per session, so a per-session timer would mean N
@@ -103,15 +144,20 @@ function createBackgroundRefreshLoop(
 	let running: Promise<void> | undefined;
 
 	const refreshNow = async (): Promise<void> => {
-		if (!backgroundRefreshEnabled()) return;
+		if (!backgroundRefreshEnabled()) {
+			logDebug("sweep.disabled", { reason: "PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0" });
+			return;
+		}
 		if (running) return running;
 		running = (async () => {
 			try {
+				logDebug("sweep.tick", { inFlightRuns: inFlightRunCount });
 				// Read the counter at sweep time, not at loop construction: a run may
 				// start or finish between ticks.
 				await refreshExpiringAccounts(store, providers, { protectActiveAccount: inFlightRunCount > 0 });
-			} catch {
+			} catch (error) {
 				// Background refresh is best-effort; request-time auth still reports actionable errors.
+				logError("sweep.failed", { detail: errorMessage(error) });
 			} finally {
 				running = undefined;
 			}
@@ -150,16 +196,36 @@ async function refreshExpiringAccounts(
 		} catch {
 			continue;
 		}
+		storeObserver(provider.id).observe(state, "refresh.sweep");
 		for (const [accountName, credential] of Object.entries(state.accounts)) {
-			if (credential.expires > now + REFRESH_SKEW_MS) continue;
+			const suspect = suspectCredentials.has(suspectKey(provider.id, accountName));
+			if (credential.expires > now + REFRESH_SKEW_MS && !suspect) continue;
 			// Refreshing rotates the token and invalidates the current one. The
 			// active account is the one an in-flight run already resolved, so
 			// rotating it now would fail that run mid-flight with a revoked-token
 			// error. pi-accounts refreshes it at the next `before_agent_start`
 			// anyway, which is a safe moment because no request is outstanding.
-			if (options.protectActiveAccount && state.active === accountName) continue;
+			if (options.protectActiveAccount && state.active === accountName) {
+				logDebug("refresh.skipped", {
+					provider: provider.id,
+					account: accountName,
+					reason: "active account has a run in flight",
+					suspect,
+					credential: credentialSummary(credential),
+				});
+				continue;
+			}
+			// Cleared before the attempt: a refresh that fails records its own
+			// failure, and re-marking on every tick would hide a genuine recovery.
+			suspectCredentials.delete(suspectKey(provider.id, accountName));
+			logInfo("refresh.due", {
+				provider: provider.id,
+				account: accountName,
+				reason: suspect ? "provider rejected the stored token" : "expiring",
+				credential: credentialSummary(credential),
+			});
 			try {
-				await refreshAccountCredential(store, provider, accountName, credential, now);
+				await refreshAccountCredential(store, provider, accountName, credential, now, { force: suspect });
 				clearRefreshFailure(provider.id, accountName);
 			} catch (error) {
 				recordRefreshFailure(provider.id, accountName, error);
@@ -182,11 +248,14 @@ function refreshFailureKey(providerId: string, accountName: string): string {
 }
 
 function recordRefreshFailure(providerId: string, accountName: string, error: unknown): void {
-	refreshFailures.set(refreshFailureKey(providerId, accountName), conciseRefreshFailure(error));
+	const detail = conciseRefreshFailure(error);
+	refreshFailures.set(refreshFailureKey(providerId, accountName), detail);
+	logError("refresh.failed", { provider: providerId, account: accountName, detail });
 }
 
 function clearRefreshFailure(providerId: string, accountName: string): void {
-	refreshFailures.delete(refreshFailureKey(providerId, accountName));
+	if (!refreshFailures.delete(refreshFailureKey(providerId, accountName))) return;
+	logInfo("refresh.recovered", { provider: providerId, account: accountName });
 }
 
 /** Names of the given provider's accounts that need a re-login. */
@@ -201,6 +270,10 @@ export function accountsNeedingRelogin(providerId: string, accountNames: Iterabl
  * which matters because Anthropic rotates tokens: two concurrent refreshes of
  * the same account would leave one session holding an invalidated token. A
  * credential another writer already refreshed is returned as-is.
+ *
+ * `force` refreshes a credential that has not expired yet. It exists for tokens
+ * the provider has already rejected: a revoked token dies before its stored
+ * expiry, so waiting for that expiry would keep every request failing.
  */
 export async function refreshAccountCredential(
 	store: AccountStore,
@@ -208,6 +281,7 @@ export async function refreshAccountCredential(
 	accountName: string,
 	credential: OAuthCredential,
 	now = Date.now(),
+	options: { force?: boolean } = {},
 ): Promise<OAuthCredential> {
 	let refreshed = credential;
 	await store.updateProviderAsync(provider.id, async (state) => {
@@ -215,13 +289,34 @@ export async function refreshAccountCredential(
 		if (!latest || latest.type !== "oauth") {
 			throw new Error(`Account "${accountName}" was removed while refreshing.`);
 		}
-		if (latest.expires > now + REFRESH_SKEW_MS) {
+		if (latest.access !== credential.access) {
+			// Another writer refreshed between our read and this lock. Whatever we
+			// were holding is already invalid; saying so here is what makes a
+			// cross-installation rotation legible in the log.
+			logInfo("refresh.superseded", {
+				provider: provider.id,
+				account: accountName,
+				held: credentialSummary(credential),
+				stored: credentialSummary(latest),
+			});
+		}
+		// A credential someone else already replaced is fresh by definition, even
+		// when this one was force-refreshed for being rejected.
+		const supersededByAnotherWriter = latest.access !== credential.access;
+		if (latest.expires > now + REFRESH_SKEW_MS && (!options.force || supersededByAnotherWriter)) {
 			refreshed = latest;
 			return state;
 		}
 		try {
 			refreshed = await provider.oauth.refresh(latest, new AbortController().signal);
 			clearRefreshFailure(provider.id, accountName);
+			storeObserver(provider.id).expectSelfChange(`refresh ${accountName}`);
+			logInfo("refresh.succeeded", {
+				provider: provider.id,
+				account: accountName,
+				before: credentialSummary(latest),
+				after: credentialSummary(refreshed),
+			});
 		} catch (error) {
 			recordRefreshFailure(provider.id, accountName, error);
 			throw sanitizeRefreshError(provider.id, accountName, error);

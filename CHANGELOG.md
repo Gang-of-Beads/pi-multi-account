@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0
+
+Makes credential failures diagnosable, and stops a rejected token from failing
+every request until something happens to rotate it.
+
+- **Refresh on rejection, not only on expiry.** A revoked Anthropic token dies
+  *before* its stored `expires` timestamp — that is what happens when a second
+  installation refreshes the same rotating credential — so the expiry-driven
+  sweep had no reason to touch it and every request kept failing with the same
+  401. A 401 now marks the account, and the next sweep refreshes it regardless
+  of the stored expiry: the account either heals before the next turn or reports
+  an honest "needs re-login". The active account is still protected while a run
+  is in flight, so the fix cannot break an outstanding request.
+
+- **Foreign writes to the account store are detected and reported.**
+  `pi-accounts.json` is global mutable state with several writers: other
+  sessions, containers sharing the home directory, and host applications (pi web
+  among them) that switch accounts by rewriting the file. A session whose model
+  is plain `anthropic/...` follows whichever account is active *at request time*,
+  so a foreign write silently changes which account it bills to. Changes this
+  process did not make are now logged as `origin=foreign` and surfaced in the
+  session as a warning.
+
+- **Debug log** at `~/.pi/agent/pi-multi-account.log` (JSONL): which account each
+  session and each aliased request resolved, every refresh with before/after
+  token fingerprints, provider rejections with request ids, and account-store
+  changes. Tokens are never written — only 8-character SHA-256 fingerprints,
+  which are enough to see that a token rotated, or that two installations hold
+  the same one. `PI_MULTI_ACCOUNT_LOG=debug` adds per-request lines,
+  `PI_MULTI_ACCOUNT_LOG=0` disables it, `PI_MULTI_ACCOUNT_LOG_FILE` moves it.
+
+- **`/account-log`** shows the tail of that log, and `/account-log check` asks
+  Anthropic whether each stored token is still accepted — using a model id that
+  does not exist, so authentication is validated without spending tokens.
+
 ## 0.4.9
 
 - Add `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0`, which makes an installation a
