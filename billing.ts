@@ -23,7 +23,13 @@ const BILLING_SALT = "59cf53e54c78";
 // user-agent. The billing header's cc_version must match the user-agent
 // version for Anthropic's subscription-billing validation to route the request
 // to the Claude Pro/Max plan. Overridable via ANTHROPIC_CLI_VERSION.
-export const CC_VERSION = "2.1.160";
+//
+// Kept in step with the actively maintained opencode-claude-auth
+// (griffinmartin) model-config: a stale version string is one of the
+// client-fingerprint signals Anthropic's "reverse engineering or duplicating
+// model outputs" enforcement keys on (see opencode-claude-auth #188 and
+// opencode-anthropic-auth #80, Apr 2026). Bump when that project bumps.
+export const CC_VERSION = "2.1.217";
 
 // Billing entrypoint, mirrored in the user-agent's `(external, <entrypoint>)`
 // suffix. Overridable via CLAUDE_CODE_ENTRYPOINT.

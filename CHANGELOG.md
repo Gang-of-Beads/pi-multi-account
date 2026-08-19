@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.2
+
+Keeps the Claude Code request fingerprint current with Anthropic's server-side
+checks, following the actively maintained proxy projects (griffinmartin/
+opencode-claude-auth, ex-machina-co/opencode-anthropic-auth).
+
+- **Bump the Claude Code client version used in the user-agent and billing
+  header from `2.1.160` to `2.1.217`.** A stale version string is one of the
+  client-fingerprint signals behind Anthropic's `reverse engineering or
+  duplicating model outputs` blocks (see opencode-claude-auth #188 and
+  opencode-anthropic-auth #80, Apr 2026, and the recurring enforcement since).
+  The signing algorithm itself (billing salt, `cch`, version suffix, identity
+  block) already matches the current-generation proxy implementations, so no
+  other request-shape change was needed. `ANTHROPIC_CLI_VERSION` still
+  overrides the version at runtime.
 ## 0.5.1
 
 Fixes what the 0.5.0 log immediately exposed about itself.
