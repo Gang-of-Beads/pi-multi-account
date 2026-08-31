@@ -47,7 +47,7 @@ import {
 	type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
 import { anthropicAdapter } from "./adapters.ts";
-import { buildUserAgent } from "./billing.ts";
+import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 import { expandPoolAccounts, NATIVE_POOL_NAME, type PoolDefinition } from "./pools-store.ts";
@@ -315,12 +315,26 @@ export function createPoolRuntime(
 		model: ProviderModel,
 		context: unknown,
 		options_: Record<string, unknown> | undefined,
+		accountName: string,
 		credential: OAuthCredential,
 	): { events: AssistantMessageEventStream; captured: () => { status: number; retryAfterMs?: number } | undefined } => {
 		let seen: { status: number; retryAfterMs?: number } | undefined;
 		const realFetch = typeof options_?.fetch === "function" ? (options_.fetch as typeof fetch) : undefined;
 		const captureFetch: typeof fetch = async (input, init) => {
-			const response = await (realFetch ?? globalThis.fetch)(input, init);
+			// The SDK has fully merged its headers by now (including its built-in
+			// bare `claude-cli/<version>` UA) — the last point where the wire UA
+			// can be synced with the billing header's cc_version.
+			const fixedInit = init
+				? { ...init, headers: new Headers(init.headers ?? undefined) }
+				: { headers: new Headers() };
+			const requestHeaders = fixedInit.headers as Headers;
+			const uaBefore = requestHeaders.get("user-agent") ?? undefined;
+			applyUserAgentOverride(requestHeaders);
+			const uaAfter = requestHeaders.get("user-agent") ?? undefined;
+			if (uaAfter !== uaBefore) {
+				logDebug("request.user_agent", { account: accountName, before: uaBefore, after: uaAfter });
+			}
+			const response = await (realFetch ?? globalThis.fetch)(input, fixedInit as RequestInit);
 			seen = { status: response.status, retryAfterMs: parseRetryAfterMs(response.headers) };
 			return response;
 		};
@@ -418,7 +432,7 @@ export function createPoolRuntime(
 				const credential = await resolveAccount(accountName, signal);
 				if (!credential) continue;
 
-				const { events, captured } = attempt(kind, model, context, options_, credential);
+				const { events, captured } = attempt(kind, model, context, options_, accountName, credential);
 				let sawContent = false;
 				let failure: AssistantMessageEvent | undefined;
 				try {

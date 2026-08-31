@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.1
+
+Fixes a user-agent mismatch on every Anthropic OAuth request.
+
+- **The full Claude Code UA never reached the wire.** The provider-level
+  `headers` registration (billing.ts / aliases.ts) does not participate in
+  pi's request header assembly — pi builds request headers from model-level
+  definitions and caller options only, and pi-ai merges its own bare
+  `claude-cli/2.1.75` UA inside the SDK client afterwards. So every OAuth
+  request actually went out with the bare UA, which does not match the
+  billing header's `cc_version=2.1.217.*`. (Tool-name aliasing, the billing
+  header injection, and plan billing itself were unaffected — Anthropic does
+  not currently reject the mismatch.)
+- **Fixed at the only point where the final headers exist**: the request-time
+  fetch wrapper (pool.ts `captureFetch` and the alias stream delegates), which
+  runs after the SDK's full header merge and is scoped to exactly the OAuth
+  requests this extension authenticates. The override rewrites only UAs
+  pi-ai's OAuth client itself produced (`claude-cli/*`), so API-key, Copilot
+  and Codex requests pass through untouched, and it is idempotent. The
+  `before_provider_headers` event was considered and rejected: it fires
+  before pi-ai's merge (no UA yet) and carries no provider id.
+- **Verified end-to-end**: requests now carry
+  `claude-cli/2.1.217 (external, sdk-cli)` on the wire (logged as
+  `request.user_agent` at debug level), matching the billing header.
+
 ## 0.6.0
 
 Adds user-defined aggregate account pools with automatic failover.

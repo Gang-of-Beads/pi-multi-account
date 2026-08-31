@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earen
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicAdapter } from "./adapters.ts";
-import { buildUserAgent } from "./billing.ts";
+import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 import { isCredentialSuspect, REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
@@ -113,6 +113,17 @@ function registerAliasProvider(
 		provider: id,
 		baseUrl: "https://api.anthropic.com",
 	}));
+	// Wrap the caller's fetch so the wire UA matches the billing header's
+	// cc_version: pi-ai merges its own bare `claude-cli/<version>` UA inside
+	// the SDK client, after every header hook pi offers, so the fetch wrapper
+	// is the only point where the final headers can be corrected. The
+	// provider-level `headers` below never reaches the wire (kept for
+	// forward-compatibility with pi versions that consume it).
+	const uaFixFetch = (realFetch: typeof fetch): typeof fetch => async (input, init) => {
+		const fixedInit = init ? { ...init, headers: new Headers(init.headers ?? undefined) } : { headers: new Headers() };
+		applyUserAgentOverride(fixedInit.headers as Headers);
+		return realFetch(input, fixedInit as RequestInit);
+	};
 	pi.unregisterProvider(id);
 	pi.registerProvider({
 		id,
@@ -194,8 +205,24 @@ function registerAliasProvider(
 						baseProvider.filterModels?.(providerModels as any, credential) ?? providerModels,
 			  }
 			: {}),
-		stream: (model, context, options) => baseProvider.stream(model as any, context, options as any),
-		streamSimple: (model, context, options) => baseProvider.streamSimple(model as any, context, options as any),
+		stream: (model, context, options) =>
+			baseProvider.stream(model as never, context, {
+				...(options as Record<string, unknown>),
+				fetch: uaFixFetch(
+					typeof (options as { fetch?: typeof fetch } | undefined)?.fetch === "function"
+						? (options as { fetch: typeof fetch }).fetch
+						: globalThis.fetch,
+				),
+			} as never),
+		streamSimple: (model, context, options) =>
+			baseProvider.streamSimple(model as never, context, {
+				...(options as Record<string, unknown>),
+				fetch: uaFixFetch(
+					typeof (options as { fetch?: typeof fetch } | undefined)?.fetch === "function"
+						? (options as { fetch: typeof fetch }).fetch
+						: globalThis.fetch,
+				),
+			} as never),
 	});
 }
 

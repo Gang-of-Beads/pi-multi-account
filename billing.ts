@@ -253,4 +253,38 @@ export function registerBillingLayer(pi: ExtensionAPI): void {
 		}
 		return undefined;
 	});
+
+	// NOTE: the provider-level `headers` registration above never reaches the
+	// wire (pi assembles request headers from model-level definitions and
+	// caller options only), and `before_provider_headers` fires before pi-ai
+	// merges its own UA — with no provider id on the event. The wire-level
+	// override lives in the request-time fetch wrappers instead (pool.ts
+	// captureFetch and the alias stream delegates), which run after the SDK's
+	// full header merge and are scoped to exactly the OAuth requests this
+	// extension authenticates. See applyUserAgentOverride.
+	void 0;
+}
+
+/**
+ * In-place user-agent override for OAuth stealth requests.
+ *
+ * Mutates the given Headers. Only rewrites a UA that pi-ai's OAuth client
+ * itself produced (`claude-cli/<version>`), so non-Anthropic or API-key
+ * requests pass through untouched, and an already-current UA is left alone
+ * so the override is idempotent.
+ *
+ * Callers must invoke this from a request-time fetch wrapper (the pool's and
+ * the aliases' captureFetch), NOT from `before_provider_headers`: at that
+ * hook pi-ai has not merged its own UA yet (the headers object carries only
+ * caller/model-level headers), and the event carries no provider id, so an
+ * unconditional rewrite there would also clobber API-key, Copilot and Codex
+ * requests. The fetch wrapper runs after the SDK's full header merge and is
+ * scoped to exactly the OAuth requests this extension authenticates.
+ */
+export function applyUserAgentOverride(headers: Headers): void {
+	const ua = headers.get("user-agent");
+	if (typeof ua !== "string" || !ua.startsWith("claude-cli/")) return;
+	const full = buildUserAgent();
+	if (ua === full) return;
+	headers.set("user-agent", full);
 }
