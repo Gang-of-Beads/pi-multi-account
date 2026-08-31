@@ -6,6 +6,9 @@
  *   adapters.ts             patched pi-accounts provider adapters
  *   refresh.ts              background refresh sweep + single-credential refresh
  *   aliases.ts              `anthropic-<account>` providers shown by /model
+ *   pool.ts                 aggregate pool runtime: failover + cooldowns
+ *   pools-store.ts          user-defined pool definitions (name + accounts)
+ *   pool-commands.ts        /pools, /pool-create, /pool-add/-remove/-delete
  *   accounts-menu.ts        /accounts (login, re-login, switch, rename, remove)
  *   subscription-import.ts  /sub-accounts, /sub-import, first-run import
  *   session-state.ts        which account a session uses + footer status
@@ -22,6 +25,11 @@
  *    Claude Pro/Max plan instead of pay-as-you-go API credits.
  *
  * Extras:
+ *   - User-defined aggregate pools: /pool-create names a provider that tries
+ *     its accounts in order and fails over automatically on 429/401/403/5xx,
+ *     with a per-account cooldown honoring `retry-after`. A pool named
+ *     `anthropic` overrides the native provider (disable pool registration
+ *     with PI_MULTI_ACCOUNT_FAILOVER=0).
  *   - Auto-imports Claude Code accounts found in the macOS Keychain or
  *     `~/.claude/.credentials.json` when the account store is empty
  *     (disable with PI_MULTI_ACCOUNT_AUTO_IMPORT=0). Interactive sessions ask
@@ -48,6 +56,8 @@ import {
 	markRunFinished,
 	markRunStarted,
 } from "./refresh.ts";
+import { clearPoolFailure, createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount, recordPoolFailure } from "./pool.ts";
+import { registerPoolCommands } from "./pool-commands.ts";
 import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
 import {
 	healActiveAccount,
@@ -68,6 +78,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const providers = patchedProviders();
 	anthropicAdapter(); // Fail fast if pi-accounts stops shipping the Anthropic adapter.
 	const refreshLoop = acquireBackgroundRefreshLoop(store, providers);
+
+	// User-defined aggregate pools (/pool-create): each registers a provider
+	// named by the user that fails over across its accounts. No pool exists
+	// until the user creates one, so the default behavior is unchanged.
+	const poolRuntime = createPoolRuntime(pi, store);
 
 	// One startup line per process makes it possible to tell which installation
 	// wrote the lines that follow — the host or a container sharing this home
@@ -124,35 +139,54 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	pi.on("after_provider_response", (event, ctx) => {
 		const providerId = ctx.model?.provider;
 		if (!providerId) return;
-		if (providerId !== "anthropic" && !providerId.startsWith(ALIAS_PREFIX)) return;
+		const isPool = isPoolProvider(providerId);
+		if (!isPool && providerId !== "anthropic" && !providerId.startsWith(ALIAS_PREFIX)) return;
 		if (event.status < 400) {
 			logDebug("response.ok", { provider: providerId, status: event.status });
-			return;
+			const account = providerId.startsWith(ALIAS_PREFIX)
+				? providerId.slice(ALIAS_PREFIX.length)
+				: lastPoolAccount();
+			if (account) clearPoolFailure(account);
+		} else {
+			void (async () => {
+				try {
+					const state = await store.readProviderAsync("anthropic");
+					const account = isPool
+						? lastPoolAccount()
+						: providerId.startsWith(ALIAS_PREFIX)
+							? providerId.slice(ALIAS_PREFIX.length)
+							: state.active;
+					logError("response.rejected", {
+						provider: providerId,
+						status: event.status,
+						account,
+						requestId: event.headers["request-id"] ?? event.headers["x-request-id"],
+						credential: account ? credentialSummary(state.accounts[account]) : undefined,
+					});
+					if (!account) return;
+					if (event.status === 401) {
+						markCredentialSuspect("anthropic", account, `provider answered 401 for ${providerId}`);
+						ctx.ui.notify(
+							`Anthropic account "${account}" was rejected (401). Refreshing its token; ` +
+								`if this repeats, re-login that account in /accounts.`,
+							"warning",
+						);
+					}
+					// Rate limits and auth rejections cool the account down so the
+					// aggregate pool prefers other accounts for a while.
+					if (event.status === 429 || event.status === 401 || event.status === 403) {
+						recordPoolFailure(account, event.status);
+					}
+				} catch (error) {
+					logError("response.rejected_handler_failed", { detail: errorMessage(error) });
+				}
+			})();
 		}
-		void (async () => {
-			try {
-				const state = await store.readProviderAsync("anthropic");
-				const account = providerId.startsWith(ALIAS_PREFIX)
-					? providerId.slice(ALIAS_PREFIX.length)
-					: state.active;
-				logError("response.rejected", {
-					provider: providerId,
-					status: event.status,
-					account,
-					requestId: event.headers["request-id"] ?? event.headers["x-request-id"],
-					credential: account ? credentialSummary(state.accounts[account]) : undefined,
-				});
-				if (event.status !== 401 || !account) return;
-				markCredentialSuspect("anthropic", account, `provider answered 401 for ${providerId}`);
-				ctx.ui.notify(
-					`Anthropic account "${account}" was rejected (401). Refreshing its token; ` +
-						`if this repeats, re-login that account in /accounts.`,
-					"warning",
-				);
-			} catch (error) {
-				logError("response.rejected_handler_failed", { detail: errorMessage(error) });
-			}
-		})();
+		// Failovers observed mid-stream (where no UI context exists) are shown
+		// here, on the first provider response of the session afterwards.
+		for (const notice of drainPoolNotices()) {
+			ctx.ui.notify(notice.message, notice.level);
+		}
 	});
 
 	pi.on("agent_end", () => {
@@ -236,6 +270,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Subscription import commands (subscription-import.ts).
 	registerClaudeImportCommands(pi, store, aliases, refreshLoop);
 
+	// Aggregate pool management (pool-commands.ts).
+	const poolSync = registerPoolCommands(pi, store, poolRuntime);
+
 
 	// Per-session startup: finish a deferred import, sync aliases, re-pin the
 	// session's account, then report it in the footer.
@@ -256,6 +293,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} catch (error) {
 			console.error(`pi-multi-account: account providers were not loaded: ${errorMessage(error)}`);
 			ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
+		}
+		try {
+			await poolSync.sync(ctx);
+		} catch (error) {
+			console.error(`pi-multi-account: aggregate pools were not loaded: ${errorMessage(error)}`);
+			ctx.ui.notify(`Aggregate pools were not loaded: ${errorMessage(error)}`, "warning");
 		}
 		await restoreAliasSelection(pi, store, ctx);
 		await reportPinnedAliasAccount(store, ctx);

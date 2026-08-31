@@ -1,14 +1,16 @@
 # pi-multi-account
 
-`pi-multi-account` adds two capabilities to pi:
+`pi-multi-account` adds three capabilities to pi:
 
 1. **Multi-account OAuth switching** via [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts), so Anthropic, GitHub Copilot, and OpenAI Codex accounts can be managed from one `/accounts` menu.
 2. **Claude subscription billing bridging** for Anthropic OAuth (`sk-ant-oat...`) requests, by sending the Claude Code-style user-agent and `x-anthropic-billing-header` required to route usage to a Claude Pro / Max subscription instead of pay-as-you-go API billing / extra usage.
+3. **User-defined aggregate pools with automatic failover** (`/pool-create`): a pool binds a provider name you choose to a set of accounts, and requests through it walk the accounts in order — rate limits, auth rejections and overloads on one account automatically retry on the next.
 
 It also includes:
 
 - automatic import of existing **Claude Code** sign-ins from this machine, with **you** choosing the account alias
 - per-account `anthropic-<account>` aliases in `/model` that **stay selected**, so `/model` and the footer always show which account a session talks to
+- user-created **aggregate pools** in `/model` under a name you choose (including `anthropic` itself, if you want the native provider to be the pool), with per-account cooldowns honoring `retry-after`
 - automatic recovery when the active Anthropic account is deleted, so the entire `anthropic` provider does not disappear from `/model`
 
 ---
@@ -31,10 +33,13 @@ It also includes:
 | `/sub-accounts` | Detect subscription-backed accounts already available on this machine (currently Claude Code) and show whether they are imported |
 | `/sub-import [name...]` | Import detected subscription accounts; asks for a name per account interactively, or takes names as arguments |
 | `anthropic-<name>` provider aliases | Every named Anthropic account appears directly in `/model`, e.g. `anthropic-personal`, `anthropic-work`, and stays selected for the whole session |
+| `/pool-create [name] [accounts...]` | Create an aggregate pool interactively: a provider id you choose that fails over across its accounts on 429/401/403/5xx |
+| `/pools` | List pools and their status (which accounts serve, which are cooling down) |
+| `/pool-add` / `/pool-remove` / `/pool-delete` | Manage pool membership and lifecycle interactively |
 | `/accounts` → *Rename account* | Rename a stored account (e.g. an auto-imported `cc-max` → `work`); the alias and the current session follow the new name |
 | Claude subscription billing bridge | Adds the Claude Code style user-agent and billing header to Anthropic OAuth requests so usage is charged to the Claude subscription path |
 | Active-account auto-heal | If the current active Anthropic account is deleted, the next `session_start` automatically activates the first remaining account |
-| Status footer | Shows `anthropic-<account> · subscription billing` when a session is pinned to an alias, otherwise `anthropic: <active-account> · subscription billing` |
+| Status footer | Shows `anthropic-<account> · subscription billing` when a session is pinned to an alias, `<pool> pool: <account> · subscription billing` for a pool (with cooling accounts), otherwise `anthropic: <active-account> · subscription billing` |
 
 ---
 
@@ -112,6 +117,52 @@ Recommended first-run flow:
    (anthropic-work) claude-opus-5 · medium
    anthropic-work · subscription billing
    ```
+
+---
+
+## Aggregate pools and failover
+
+A pool is a provider whose requests automatically retry on another account:
+
+```text
+/pool-create team personal work
+```
+
+The flow asks for anything you leave out: the name (it becomes the provider id
+in `/model`), and the accounts — "All accounts (dynamic)" or a specific,
+ordered list. Once created, `team/claude-opus-5` tries `personal` first, and
+when that account is rate-limited (429), rejected (401/403) or overloaded
+(5xx/529), the request is retried on `work` — transparently, before any
+text was streamed, so output is never duplicated.
+
+### Ordering and cooldowns
+
+- The pool tries its accounts in the order you defined (an "all" pool follows
+  the store, active account first).
+- A failed account is put on cooldown: rate limits honor the server's
+  `retry-after` (doubling per repeat, capped at 15 minutes); auth failures get
+  a short cooldown and their credential is marked for refresh (the same
+  machinery that heals revoked tokens). The footer lists cooling accounts.
+- Cooldowns only reorder; a cooled-down account is still tried when every
+  other account failed too.
+
+### The reserved name
+
+A pool named `anthropic` overrides pi's native Anthropic provider: plain
+`anthropic/<model>` becomes the aggregate, and every other consumer of the
+native provider (default model, `/model` picker, scripts) fails over too.
+Every other name registers a fresh provider, so nothing changes until you
+create a pool.
+
+### Storage and lifecycle
+
+- Definitions: `~/.pi/agent/pi-multi-account-pools.json`
+  (`PI_MULTI_ACCOUNT_POOLS_FILE` moves it).
+- Re-registered on every session start; `all` pools pick up new accounts
+  automatically, and deleting an account never breaks a pool — it just serves
+  fewer.
+- `/pool-remove` on an "all" pool freezes it into the explicit remainder.
+- `PI_MULTI_ACCOUNT_FAILOVER=0` disables pool registration entirely.
 
 ---
 
@@ -244,6 +295,8 @@ The billing injection is skipped for:
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run auto-import when the Anthropic account store is empty |
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space separated account names used by first-run import, e.g. `work,personal`. When set, import runs immediately without asking |
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to disable `anthropic-<name>` provider aliases |
+| `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable aggregate pool registration |
+| `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Where pool definitions are stored |
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary installation that shares the credential file, so only one installation rotates tokens |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` adds per-request credential resolution; `0`/`off` disables the debug log |
 | `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | Where the debug log is written |
@@ -273,6 +326,8 @@ surprise 401 raises after the fact.
 | `refresh.superseded` | Another writer had already replaced the token this process was holding |
 | `refresh.backoff` | A credential that needs a re-login, being left alone until `retryAt` |
 | `credential.suspect` / `response.rejected` | The provider rejected a token, with the request id |
+| `pool.failover` / `pool.cooldown` / `pool.recovered` | Aggregate pool failover decisions, per account and status |
+| `pool.saved` / `pool.deleted` / `pool.registered` | Pool definition changes and provider registrations |
 | `active.switched` / `model.selected` | Account and model changes made by this session |
 
 Tokens are never written to the log; each one appears as an 8-character SHA-256
@@ -411,6 +466,9 @@ Also remember:
 | `adapters.ts` | pi-accounts provider adapters, patched for Node 24 signals and credential metadata |
 | `refresh.ts` | Background refresh sweep, single-credential refresh, refresh-failure state |
 | `aliases.ts` | `anthropic-<account>` provider aliases shown by `/model` |
+| `pool.ts` | Aggregate pool runtime: failover loop, cooldowns, status capture |
+| `pools-store.ts` | User-defined pool definitions (name + accounts) on disk |
+| `pool-commands.ts` | `/pools`, `/pool-create`, `/pool-add/-remove/-delete` |
 | `accounts-menu.ts` | `/accounts`: login, re-login, switch, rename, remove |
 | `subscription-import.ts` | `/sub-accounts`, `/sub-import`, first-run interactive import |
 | `session-state.ts` | Which account a session uses, alias restore, footer status |
@@ -433,6 +491,7 @@ npx jiti ./import-names.test.ts     # account-import naming
 npx jiti ./store-watch.test.ts      # foreign-writer detection
 npx jiti ./revoked-refresh.test.ts  # 401-driven refresh, backoff, log-once
 npx jiti ./wiring.test.ts           # event wiring + the log sink really writes
+npx jiti ./pool.test.ts             # pool ordering, cooldowns, failover
 ```
 
 ### Local testing

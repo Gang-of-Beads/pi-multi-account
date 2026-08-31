@@ -43,6 +43,9 @@ for (const event of ["after_provider_response", "before_agent_start", "model_sel
 	assert.ok(events.includes(event), `extension must subscribe to ${event}`);
 }
 assert.ok(commands.includes("accounts"), "/accounts must still be registered");
+assert.ok(commands.includes("pool-create"), "/pool-create must be registered (user-defined aggregate pools)");
+assert.ok(commands.includes("pools"), "/pools must be registered");
+assert.ok(commands.includes("pool-delete"), "/pool-delete must be registered");
 // Diagnostics are a log file, not a user-facing surface.
 assert.ok(!commands.includes("account-log"), "the debug log must not add a command");
 

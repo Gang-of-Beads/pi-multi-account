@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0
+
+Adds user-defined aggregate account pools with automatic failover.
+
+- **Aggregate pools (`/pool-create`).** Name a provider, pick the accounts it
+  may use ("every current account" or a specific ordered list), and requests
+  through `<pool>/<model>` try them in order — failing over automatically on
+  429/401/403/408/5xx before any content was streamed. The pool appears in
+  `/model` under the name you chose; nothing is registered until you create
+  one, so the default behavior is unchanged. A pool literally named
+  `anthropic` overrides the native provider instead — that is the one reserved
+  name, and choosing it is explicit.
+- **Per-account cooldowns.** A rate-limited account cools down (honoring the
+  server's `retry-after`, doubling per repeat, capped at 15 minutes); auth
+  failures cool down briefly and mark the credential for refresh (the existing
+  401 machinery). The footer shows which accounts are cooling.
+- **Safe retries.** An attempt that failed before any content was streamed is
+  retried on the next account; an error after content started is forwarded
+  as-is, because retrying then could duplicate or diverge partial output.
+- **Failover notifications.** Mid-stream failovers are queued (the pool runs
+  where no UI context exists) and shown on the next provider response.
+- **Management commands.** `/pools` lists pools and their status;
+  `/pool-add`, `/pool-remove` (freezes an "all" pool into the explicit
+  remainder), `/pool-delete` manage them interactively. Definitions persist
+  in `~/.pi/agent/pi-multi-account-pools.json` and re-register on session
+  start.
+- **New env vars.** `PI_MULTI_ACCOUNT_FAILOVER=0` disables pool registration
+  entirely; `PI_MULTI_ACCOUNT_POOLS_FILE` moves the definitions file.
+
 ## 0.5.2
 
 Keeps the Claude Code request fingerprint current with Anthropic's server-side
