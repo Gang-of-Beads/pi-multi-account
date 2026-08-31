@@ -58,6 +58,7 @@ import {
 } from "./refresh.ts";
 import { clearPoolFailure, createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount, recordPoolFailure } from "./pool.ts";
 import { registerPoolCommands } from "./pool-commands.ts";
+import { readPools } from "./pools-store.ts";
 import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
 import {
 	healActiveAccount,
@@ -82,7 +83,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// User-defined aggregate pools (/pool-create): each registers a provider
 	// named by the user that fails over across its accounts. No pool exists
 	// until the user creates one, so the default behavior is unchanged.
+	// Bootstrap registers stored definitions immediately — like the aliases,
+	// before any model resolution — because `pi -p --model <pool>/…` resolves
+	// the model before the first session_start.
 	const poolRuntime = createPoolRuntime(pi, store);
+	try {
+		for (const definition of readPools()) {
+			poolRuntime.registerPool(definition);
+		}
+	} catch (error) {
+		console.warn("pi-multi-account: pool bootstrap failed:", errorMessage(error));
+	}
 
 	// One startup line per process makes it possible to tell which installation
 	// wrote the lines that follow — the host or a container sharing this home
