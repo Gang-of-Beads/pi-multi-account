@@ -36,6 +36,7 @@ import {
 	lastPoolAccount,
 	parseRetryAfterMs,
 	planAccountOrder,
+	poolFirstPick,
 	poolsEnabled,
 	recordPoolFailure,
 	resetPoolStateForTesting,
@@ -365,6 +366,8 @@ resetPoolsFileForTesting();
 	);
 	assert.equal((result as { content: Array<{ text?: string }> }).content[0]?.text, "hello from work");
 	assert.equal(lastPoolAccount(), "work", "the pool reports which account served the request");
+	assert.equal(lastPoolAccount("team"), "work", "…and reports it per pool, so two pools cannot cross-report");
+	assert.equal(lastPoolAccount("other-pool"), undefined, "a pool that never ran reports nothing");
 
 	const notices = drainPoolNotices();
 	assert.equal(notices.length, 1);
@@ -535,6 +538,28 @@ resetPoolsFileForTesting();
 	} finally {
 		delete process.env.PI_MULTI_ACCOUNT_FAILOVER;
 	}
+}
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+// The footer needs an account to show before the first request of a session:
+// poolFirstPick answers "who serves the next request" from the definition and
+// the current cooldowns, without making one.
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+{
+	const store = await makeStore("merchant", ["personal", "merchant", "work"]);
+	const state = await store.readProviderAsync("anthropic");
+	assert.equal(poolFirstPick("nope", state), undefined, "an unknown pool has no pick");
+
+	upsertPool({ name: "anthropic", accounts: "all" });
+	assert.equal(poolFirstPick("anthropic", state), "merchant", "an all-pool leads with the stored active account");
+
+	recordPoolFailure("merchant", 429);
+	assert.equal(poolFirstPick("anthropic", state), "personal", "a cooled-down account is not the next pick");
+
+	upsertPool({ name: "ordered", accounts: ["work", "personal"] });
+	assert.equal(poolFirstPick("ordered", state), "work", "an explicit pool leads with its first entry");
 }
 resetPoolStateForTesting();
 resetPoolsFileForTesting();

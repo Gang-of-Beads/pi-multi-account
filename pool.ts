@@ -50,7 +50,7 @@ import { anthropicAdapter } from "./adapters.ts";
 import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
-import { expandPoolAccounts, NATIVE_POOL_NAME, type PoolDefinition } from "./pools-store.ts";
+import { expandPoolAccounts, NATIVE_POOL_NAME, readPools, type PoolDefinition } from "./pools-store.ts";
 import { isCredentialSuspect, markCredentialSuspect, REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
 import { storeObserver } from "./store-watch.ts";
 
@@ -86,16 +86,18 @@ export function drainPoolNotices(): PoolNotice[] {
 }
 
 /**
- * The account a pool last resolved a credential for.
+ * The account each pool last resolved a credential for, plus the most recent
+ * across all pools.
  *
  * A response handler sees only the provider id, not which account served the
- * request — failover may have moved it off the first pick. This is the missing
- * answer for cooldown bookkeeping and the status footer.
+ * request — failover may have moved it off the first pick. Tracking it per
+ * pool keeps two pools in one process from reporting each other's account.
  */
 let lastResolvedAccount: string | undefined;
+const lastAccountByPool = new Map<string, string>();
 
-export function lastPoolAccount(): string | undefined {
-	return lastResolvedAccount;
+export function lastPoolAccount(poolName?: string): string | undefined {
+	return poolName === undefined ? lastResolvedAccount : lastAccountByPool.get(poolName);
 }
 
 interface AccountCooldown {
@@ -178,6 +180,7 @@ export function resetPoolStateForTesting(): void {
 	cooldowns.clear();
 	pendingNotices.length = 0;
 	lastResolvedAccount = undefined;
+	lastAccountByPool.clear();
 }
 
 /** Whether a status should move the pool to the next account. */
@@ -199,6 +202,24 @@ export function planAccountOrder(accounts: string[], now = Date.now()): string[]
 		(cooldownUntil(name, now) === undefined ? healthy : cooled).push(name);
 	}
 	return [...healthy, ...cooled];
+}
+
+/**
+ * The account a pool would try first right now, without making a request.
+ *
+ * The footer needs something to show before the first request of a session:
+ * until the pool resolves a credential there is no "current" account, and
+ * showing nothing at all hides both the pool and the subscription-billing
+ * status. Cooldowns are honored, so this is the account that will actually
+ * serve the next request.
+ */
+export function poolFirstPick(
+	poolName: string,
+	state: Pick<ProviderState, "active" | "accounts">,
+): string | undefined {
+	const definition = readPools().find((pool) => pool.name === poolName);
+	if (!definition) return undefined;
+	return planAccountOrder(expandPoolAccounts(definition, Object.keys(state.accounts), state.active))[0];
 }
 
 /** Parse `retry-after` (seconds or HTTP date) / `retry-after-ms` into ms. */
@@ -359,6 +380,7 @@ export function createPoolRuntime(
 	const resolveAccount = async (
 		accountName: string,
 		signal: AbortSignal | undefined,
+		poolName?: string,
 	): Promise<OAuthCredential | undefined> => {
 		try {
 			const state = await store.readProviderAsync("anthropic");
@@ -386,6 +408,7 @@ export function createPoolRuntime(
 				credential: credentialSummary(credential),
 			});
 			lastResolvedAccount = accountName;
+			if (poolName !== undefined) lastAccountByPool.set(poolName, accountName);
 			return credential;
 		} catch (error) {
 			if (signal?.aborted) return undefined;
@@ -429,7 +452,7 @@ export function createPoolRuntime(
 			for (let index = 0; index < accounts.length; index += 1) {
 				const accountName = accounts[index]!;
 				if (signal?.aborted) break;
-				const credential = await resolveAccount(accountName, signal);
+				const credential = await resolveAccount(accountName, signal, definition.name);
 				if (!credential) continue;
 
 				const { events, captured } = attempt(kind, model, context, options_, accountName, credential);
@@ -537,7 +560,7 @@ export function createPoolRuntime(
 			const state = await store.readProviderAsync("anthropic");
 			const accounts = expandPoolAccounts(definition, Object.keys(state.accounts), state.active);
 			for (const accountName of accounts) {
-				const credential = await resolveAccount(accountName, signal);
+				const credential = await resolveAccount(accountName, signal, definition.name);
 				if (credential) return { auth: { apiKey: credential.access }, source: `pi-accounts:${accountName}` };
 			}
 			logError("pool.unresolved", { pool: definition.name, reason: "no usable account credential" });

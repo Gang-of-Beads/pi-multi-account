@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.2
+
+Keeps the status footer meaningful on a pool model.
+
+- **The footer no longer goes blank when a pool model is selected.** A pool
+  picks its account per request, so before the first request of a session
+  there was no "current" account and the whole status line (pool, account,
+  subscription billing, cooling accounts) disappeared. It now falls back to
+  the account the pool would try next, honoring cooldowns.
+- **Last-used account is tracked per pool.** `lastPoolAccount(poolName)`
+  keeps two pools in one process from reporting each other's account in the
+  footer and in cooldown bookkeeping.
+
 ## 0.6.1
 
 Fixes a user-agent mismatch on every Anthropic OAuth request.

@@ -156,14 +156,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			logDebug("response.ok", { provider: providerId, status: event.status });
 			const account = providerId.startsWith(ALIAS_PREFIX)
 				? providerId.slice(ALIAS_PREFIX.length)
-				: lastPoolAccount();
+				: lastPoolAccount(isPool ? providerId : undefined);
 			if (account) clearPoolFailure(account);
 		} else {
 			void (async () => {
 				try {
 					const state = await store.readProviderAsync("anthropic");
 					const account = isPool
-						? lastPoolAccount()
+						? lastPoolAccount(providerId)
 						: providerId.startsWith(ALIAS_PREFIX)
 							? providerId.slice(ALIAS_PREFIX.length)
 							: state.active;

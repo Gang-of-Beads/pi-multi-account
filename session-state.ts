@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { ALIAS_PREFIX, aliasAccountName } from "./aliases.ts";
 import { credentialSummary, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
-import { coolingAccountNames, isPoolProvider, lastPoolAccount, poolLabel } from "./pool.ts";
+import { coolingAccountNames, isPoolProvider, lastPoolAccount, poolFirstPick, poolLabel } from "./pool.ts";
 import { accountsNeedingRelogin } from "./refresh.ts";
 
 const BILLING_STATUS_KEY = "pi-multi-account";
@@ -21,20 +21,26 @@ export async function updateBillingStatus(store: AccountStore, ctx: ExtensionCon
 		// Prefer the account bound to the selected alias: that is the account this
 		// session actually authenticates as, regardless of the stored active one.
 		const sessionAccount = aliasAccountName(ctx.model?.provider);
-		const poolProvider = isPoolProvider(ctx.model?.provider) && !sessionAccount;
-		const account = sessionAccount ?? (poolProvider ? lastPoolAccount() : state.active);
+		const poolName = !sessionAccount && isPoolProvider(ctx.model?.provider) ? ctx.model?.provider : undefined;
+		// A pool picks its account per request, so before the first request of a
+		// session there is no "current" account yet — fall back to the account it
+		// would try next, so the footer never goes blank on a pool model.
+		const poolAccount = poolName === undefined
+			? undefined
+			: (lastPoolAccount(poolName) ?? poolFirstPick(poolName, state));
+		const account = sessionAccount ?? (poolName !== undefined ? poolAccount : state.active);
 		if (account) {
 			const warning = failedAccounts.length > 0
 				? ` · ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"} need re-login`
 				: "";
 			const cooling = coolingAccountNames();
-			const coolingNote = poolProvider && cooling.length > 0 ? ` · cooling: ${cooling.join(", ")}` : "";
+			const coolingNote = poolName !== undefined && cooling.length > 0 ? ` · cooling: ${cooling.join(", ")}` : "";
 			// A pool provider serves whichever account answered; a pinned alias
 			// reports its own account; the native provider names its first pick.
 			const label = sessionAccount
 				? `${ALIAS_PREFIX}${sessionAccount}`
-				: poolProvider
-					? poolLabel(ctx.model?.provider, account)
+				: poolName !== undefined
+					? poolLabel(poolName, account)
 					: `anthropic: ${account}`;
 			ctx.ui.setStatus(BILLING_STATUS_KEY, `${label} · subscription billing${warning}${coolingNote}`);
 		} else {
