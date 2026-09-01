@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-multi-account",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
   "type": "module",
@@ -36,6 +36,7 @@
     "pool.ts",
     "pool-commands.ts",
     "pools-store.ts",
+    "refresh-cli.ts",
     "refresh.ts",
     "session-state.ts",
     "store-watch.ts",
