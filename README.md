@@ -54,13 +54,13 @@ If your machine has access to the private repository:
 #### SSH
 
 ```bash
-pi install git:git@github.com:VincentHanxiaoDu/pi-multi-account.git@v0.4.0
+pi install git:git@github.com:Gang-of-Beads/pi-multi-account.git@v0.7.0
 ```
 
 #### HTTPS
 
 ```bash
-pi install git:https://github.com/VincentHanxiaoDu/pi-multi-account.git@v0.4.0
+pi install git:https://github.com/Gang-of-Beads/pi-multi-account.git@v0.7.0
 ```
 
 Then run:
@@ -80,7 +80,7 @@ pi install /absolute/path/to/pi-multi-account
 ### Option C: install by cloning into the extensions directory
 
 ```bash
-git clone git@github.com:VincentHanxiaoDu/pi-multi-account.git \
+git clone git@github.com:Gang-of-Beads/pi-multi-account.git \
   ~/.pi/agent/extensions/pi-multi-account
 ```
 
@@ -518,6 +518,10 @@ Then run:
 ```
 
 ---
+
+## Maintained by
+
+[Gang of Beads](https://github.com/Gang-of-Beads).
 
 ## Credits
 
