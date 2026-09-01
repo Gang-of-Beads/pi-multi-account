@@ -27,18 +27,14 @@ import {
 } from "@earendil-works/pi-ai";
 import { isCredentialSuspect, resetSuspectCredentialsForTesting } from "./refresh.ts";
 import {
-	clearPoolFailure,
-	coolingAccountNames,
 	createPoolRuntime,
 	drainPoolNotices,
 	isFailoverEligible,
 	isPoolProvider,
 	lastPoolAccount,
-	parseRetryAfterMs,
 	planAccountOrder,
 	poolFirstPick,
 	poolsEnabled,
-	recordPoolFailure,
 	resetPoolStateForTesting,
 	type BaseStreamHost,
 } from "./pool.ts";
@@ -140,16 +136,15 @@ resetPoolsFileForTesting();
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-// Order: healthy accounts lead (definition order), cooled-down ones trail —
-// reachable, but only as a last resort.
+// Order: the definition fixes the order, the rotation cursor fixes the start.
+// Accounts before the cursor still get tried, after the ones behind it, so a
+// request only fails when every account failed.
 resetPoolStateForTesting();
-assert.deepEqual(planAccountOrder(["b", "a", "c"]), ["b", "a", "c"]);
-recordPoolFailure("b", 429);
-recordPoolFailure("c", 429);
-assert.deepEqual(planAccountOrder(["b", "a", "c"], Date.now() + 1000), ["a", "b", "c"]);
-// Cooldown expiry restores the definition order.
-assert.deepEqual(planAccountOrder(["b", "a", "c"], Date.now() + 61 * 60 * 1000), ["b", "a", "c"]);
-resetPoolStateForTesting();
+assert.deepEqual(planAccountOrder(["a", "b", "c"]), ["a", "b", "c"], "no cursor keeps the definition order");
+assert.deepEqual(planAccountOrder(["a", "b", "c"], "b"), ["b", "c", "a"], "the cursor rotates the list");
+assert.deepEqual(planAccountOrder(["a", "b", "c"], "a"), ["a", "b", "c"], "a cursor on the first entry is a no-op");
+assert.deepEqual(planAccountOrder(["a", "b", "c"], "gone"), ["a", "b", "c"], "an unknown cursor is ignored");
+assert.deepEqual(planAccountOrder([], "a"), [], "an empty pool stays empty");
 
 // Status classification.
 assert.equal(isFailoverEligible(429), true);
@@ -157,40 +152,6 @@ assert.equal(isFailoverEligible(401), true);
 assert.equal(isFailoverEligible(529), true);
 assert.equal(isFailoverEligible(400), false, "a bad request is not worth another account");
 assert.equal(isFailoverEligible(undefined), false);
-
-// Retry-after parsing: ms header wins, seconds and HTTP dates both work.
-{
-	assert.equal(parseRetryAfterMs(new Headers({ "retry-after": "2" })), 2000);
-	assert.equal(parseRetryAfterMs(new Headers({ "retry-after-ms": "250" })), 250);
-	assert.equal(parseRetryAfterMs(new Headers({ "retry-after": "5", "retry-after-ms": "100" })), 100);
-	const date = parseRetryAfterMs(new Headers({ "retry-after": new Date(Date.now() + 30 * 1000).toUTCString() }));
-	assert.ok(date !== undefined && date > 25 * 1000 && date <= 30 * 1000, "HTTP date parses to a remaining duration");
-}
-
-// Cooldowns: 429 doubles per repeat, honors the server's retry-after, auth
-// failures are short, success clears.
-resetPoolStateForTesting();
-{
-	const cooldownBase = logEvents("pool.cooldown").length;
-	recordPoolFailure("work", 429);
-	assert.deepEqual(coolingAccountNames(), ["work"]);
-	recordPoolFailure("work", 429, { detail: "rate_limit_error" });
-	// Second 429 without a server hint doubles to 2 minutes.
-	const entries = logEvents("pool.cooldown").slice(cooldownBase);
-	assert.equal(entries.length, 2);
-	assert.equal(entries[1]!.account, "work");
-	assert.equal(entries[1]!.cooldownMs, 120 * 1000, "a repeated 429 doubles the cooldown");
-	// A server-provided hint caps and replaces the backoff.
-	recordPoolFailure("work", 429, { retryAfterMs: 5000 });
-	assert.equal(logEvents("pool.cooldown").at(-1)?.cooldownMs, 5000);
-	// Auth failures are short and fixed.
-	recordPoolFailure("personal", 401);
-	assert.equal(logEvents("pool.cooldown").at(-1)?.cooldownMs, 30 * 1000);
-	// Recovery clears.
-	clearPoolFailure("work");
-	assert.deepEqual(coolingAccountNames(), ["personal"]);
-}
-resetPoolStateForTesting();
 
 // ---------------------------------------------------------------------------
 // Failover through a stub provider
@@ -347,6 +308,9 @@ resetPoolsFileForTesting();
 	]);
 	const { pi, providers } = stubPi();
 	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	// Persist then register, the way /pool-create does: poolFirstPick reads the
+	// stored definition to answer "who serves the next request".
+	upsertPool({ name: "team", accounts: ["personal", "work"] });
 	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
 
 	const registered = providers["team"]!;
@@ -372,13 +336,16 @@ resetPoolsFileForTesting();
 	const notices = drainPoolNotices();
 	assert.equal(notices.length, 1);
 	assert.match(notices[0]!.message, /Pool "team": account "personal" failed \(429\); retrying with "work"/);
-	assert.deepEqual(coolingAccountNames(), ["personal"], "the rate-limited account is on cooldown");
+	// The rotation moved to the account that answered; nothing is scheduled,
+	// nothing expires.
+	assert.equal(poolFirstPick("team", await store.readProviderAsync("anthropic")), "work", "rotation now starts at work");
 
-	// The next request skips the cooled-down account entirely.
+	// The next request starts there instead of retrying the failed account.
 	await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.equal(fake.requests[0]?.apiKey, "access-personal", "the first attempt used the first pool account");
 	assert.equal(fake.requests[1]?.apiKey, "access-work", "failover used the second pool account");
-	assert.equal(fake.requests[2]?.apiKey, "access-work", "the next request starts with the healthy account");
+	assert.equal(fake.requests[2]?.apiKey, "access-work", "the next request starts with the account that worked");
+	assert.equal(fake.requests.length, 3, "and does not re-try the failed account first");
 
 	// Unregistration removes the provider and the pool-provider marking.
 	runtime.unregisterPool("team");
@@ -441,7 +408,11 @@ resetPoolsFileForTesting();
 
 	assert.equal(isCredentialSuspect("anthropic", "personal"), true, "a 401 marks the credential for refresh");
 
-	// Next request: personal refreshes (suspect), works, and serves.
+	// Rotation moved past the 401'd account, so the next request would start at
+	// "work". Reset the cursor to prove the other half of the contract: when the
+	// rotation does come back around, the suspect credential is refreshed first
+	// rather than replayed.
+	resetPoolStateForTesting();
 	const secondFake = makeFakeProvider([{ status: 200, text: "recovered" }]);
 	const { pi: pi2, providers: providers2 } = stubPi();
 	const runtime2 = createPoolRuntime(pi2, store, { baseProvider: secondFake, refreshAdapter: adapter });
@@ -450,7 +421,7 @@ resetPoolsFileForTesting();
 	const { result } = await collect((registered2.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: secondFake.fetch }));
 	assert.equal((result as { content: Array<{ text?: string }> }).content[0]?.text, "recovered");
 	assert.deepEqual(refreshCalls, ["access-personal"], "the suspect credential was refreshed before use");
-	assert.equal(lastPoolAccount(), "personal", "the refreshed first pick served the request");
+	assert.equal(lastPoolAccount(), "personal", "the refreshed account served the request");
 }
 resetSuspectCredentialsForTesting();
 resetPoolStateForTesting();
@@ -555,9 +526,6 @@ resetPoolsFileForTesting();
 	upsertPool({ name: "anthropic", accounts: "all" });
 	assert.equal(poolFirstPick("anthropic", state), "merchant", "an all-pool leads with the stored active account");
 
-	recordPoolFailure("merchant", 429);
-	assert.equal(poolFirstPick("anthropic", state), "personal", "a cooled-down account is not the next pick");
-
 	upsertPool({ name: "ordered", accounts: ["work", "personal"] });
 	assert.equal(poolFirstPick("ordered", state), "work", "an explicit pool leads with its first entry");
 }
@@ -565,4 +533,4 @@ resetPoolStateForTesting();
 resetPoolsFileForTesting();
 
 assert.equal(unexpectedRefreshes, 0, "no test scenario should reach for a token refresh");
-console.log("ok: pool definitions, ordering, cooldowns, failover, no-retry-after-content, disable switch");
+console.log("ok: pool definitions, rotation order, failover, no-retry-after-content, disable switch");

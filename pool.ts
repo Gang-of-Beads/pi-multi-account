@@ -61,12 +61,6 @@ type ProviderState = Awaited<ReturnType<AccountStore["readProviderAsync"]>>;
 /** Statuses that are worth trying a different account for. */
 const FAILOVER_STATUSES = new Set([401, 403, 408, 429, 500, 502, 503, 504, 529]);
 
-/** First cooldown for a rate-limited account, doubled per repeat, capped. */
-const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
-const RATE_LIMIT_COOLDOWN_MAX_MS = 15 * 60 * 1000;
-/** Auth/overload failures get a short cooldown; a refresh usually fixes them. */
-const AUTH_COOLDOWN_MS = 30 * 1000;
-
 export interface PoolNotice {
 	message: string;
 	level: "info" | "warning" | "error";
@@ -100,87 +94,29 @@ export function lastPoolAccount(poolName?: string): string | undefined {
 	return poolName === undefined ? lastResolvedAccount : lastAccountByPool.get(poolName);
 }
 
-interface AccountCooldown {
-	until: number;
-	status: number;
-	attempts: number;
-	detail?: string;
-}
-
-/** Per-account cooldowns, shared by every session in this process. */
-const cooldowns = new Map<string, AccountCooldown>();
-
-function cooldownUntil(accountName: string, now: number): number | undefined {
-	const entry = cooldowns.get(accountName);
-	if (!entry) return undefined;
-	if (entry.until <= now) {
-		cooldowns.delete(accountName);
-		return undefined;
-	}
-	return entry.until;
-}
-
 /**
- * Put an account on cooldown after the provider rejected it.
+ * Where each pool starts its next request.
  *
- * Rate limits honor the server's `retry-after` (bounded by the cap) and double
- * per repeat; auth and overload failures get a short fixed cooldown, on top of
- * the credential being marked suspect so the next resolution refreshes first.
+ * Rotation, not scheduling: a pool keeps using the account that last worked,
+ * and an error moves it to the next one, one account at a time. There is no
+ * cooldown clock, no backoff and no retry-after bookkeeping — a failing
+ * account simply stops being the starting point.
  */
-export function recordPoolFailure(
-	accountName: string,
-	status: number,
-	options: { retryAfterMs?: number; detail?: string } = {},
-): void {
-	const now = Date.now();
-	const previous = cooldowns.get(accountName);
-	const repeated = previous !== undefined && previous.status === status;
-	let ms: number;
-	if (status === 429) {
-		if (options.retryAfterMs !== undefined) {
-			ms = Math.min(options.retryAfterMs, RATE_LIMIT_COOLDOWN_MAX_MS);
-		} else {
-			const attempts = repeated ? previous!.attempts + 1 : 1;
-			ms = Math.min(RATE_LIMIT_COOLDOWN_MS * 2 ** (attempts - 1), RATE_LIMIT_COOLDOWN_MAX_MS);
-		}
-	} else {
-		ms = AUTH_COOLDOWN_MS;
-	}
-	cooldowns.set(accountName, {
-		until: now + ms,
-		status,
-		attempts: repeated && previous!.status === status ? previous!.attempts + 1 : 1,
-		...(options.detail ? { detail: options.detail } : {}),
-	});
-	logInfo("pool.cooldown", {
-		account: accountName,
-		status,
-		cooldownMs: ms,
-		until: new Date(now + ms).toISOString(),
-		...(options.detail ? { detail: options.detail } : {}),
-	});
+const poolCursor = new Map<string, string>();
+
+/** Point a pool at the account that just served it. */
+function setPoolCursor(poolName: string, accountName: string): void {
+	if (poolCursor.get(poolName) === accountName) return;
+	poolCursor.set(poolName, accountName);
+	logDebug("pool.cursor", { pool: poolName, account: accountName });
 }
 
-/** A successful response ends an account's cooldown. */
-export function clearPoolFailure(accountName: string): void {
-	if (cooldowns.delete(accountName)) {
-		logInfo("pool.recovered", { account: accountName });
-	}
-}
-
-/** Accounts currently on cooldown, for the status footer. */
-export function coolingAccountNames(now = Date.now()): string[] {
-	return [...cooldowns.entries()]
-		.filter(([, entry]) => entry.until > now)
-		.map(([name]) => name);
-}
-
-/** Reset cooldowns and notices. Tests only. */
+/** Reset rotation state and notices. Tests only. */
 export function resetPoolStateForTesting(): void {
-	cooldowns.clear();
 	pendingNotices.length = 0;
 	lastResolvedAccount = undefined;
 	lastAccountByPool.clear();
+	poolCursor.clear();
 }
 
 /** Whether a status should move the pool to the next account. */
@@ -191,17 +127,15 @@ export function isFailoverEligible(status: number | undefined): boolean {
 /**
  * Order the pool's accounts for one request.
  *
- * The definition (or, for "all" pools, the store) fixes the base order; healthy
- * accounts lead it and cooled-down accounts trail, still reachable when
- * everything else is cooling down too.
+ * The definition fixes the order; the rotation cursor fixes the starting
+ * point. Accounts before the cursor are still tried — after the ones behind
+ * it — so a request only fails when every account failed.
  */
-export function planAccountOrder(accounts: string[], now = Date.now()): string[] {
-	const healthy: string[] = [];
-	const cooled: string[] = [];
-	for (const name of accounts) {
-		(cooldownUntil(name, now) === undefined ? healthy : cooled).push(name);
-	}
-	return [...healthy, ...cooled];
+export function planAccountOrder(accounts: string[], startAt?: string): string[] {
+	if (startAt === undefined) return [...accounts];
+	const index = accounts.indexOf(startAt);
+	if (index <= 0) return [...accounts];
+	return [...accounts.slice(index), ...accounts.slice(0, index)];
 }
 
 /**
@@ -210,8 +144,8 @@ export function planAccountOrder(accounts: string[], now = Date.now()): string[]
  * The footer needs something to show before the first request of a session:
  * until the pool resolves a credential there is no "current" account, and
  * showing nothing at all hides both the pool and the subscription-billing
- * status. Cooldowns are honored, so this is the account that will actually
- * serve the next request.
+ * status. The rotation cursor is honored, so this is the account that will
+ * actually serve the next request.
  */
 export function poolFirstPick(
 	poolName: string,
@@ -219,24 +153,8 @@ export function poolFirstPick(
 ): string | undefined {
 	const definition = readPools().find((pool) => pool.name === poolName);
 	if (!definition) return undefined;
-	return planAccountOrder(expandPoolAccounts(definition, Object.keys(state.accounts), state.active))[0];
-}
-
-/** Parse `retry-after` (seconds or HTTP date) / `retry-after-ms` into ms. */
-export function parseRetryAfterMs(headers: Headers, now = Date.now()): number | undefined {
-	const msHeader = headers.get("retry-after-ms");
-	if (msHeader) {
-		const value = Number.parseFloat(msHeader);
-		if (!Number.isNaN(value)) return value;
-	}
-	const seconds = headers.get("retry-after");
-	if (seconds) {
-		const numeric = Number.parseFloat(seconds);
-		if (!Number.isNaN(numeric)) return numeric * 1000;
-		const parsed = Date.parse(seconds);
-		if (!Number.isNaN(parsed)) return Math.max(0, parsed - now);
-	}
-	return undefined;
+	const accounts = expandPoolAccounts(definition, Object.keys(state.accounts), state.active);
+	return planAccountOrder(accounts, poolCursor.get(poolName))[0];
 }
 
 /** The surface of the built-in provider the pool delegates to (narrowed for tests). */
@@ -338,8 +256,8 @@ export function createPoolRuntime(
 		options_: Record<string, unknown> | undefined,
 		accountName: string,
 		credential: OAuthCredential,
-	): { events: AssistantMessageEventStream; captured: () => { status: number; retryAfterMs?: number } | undefined } => {
-		let seen: { status: number; retryAfterMs?: number } | undefined;
+	): { events: AssistantMessageEventStream; captured: () => number | undefined } => {
+		let seen: number | undefined;
 		const realFetch = typeof options_?.fetch === "function" ? (options_.fetch as typeof fetch) : undefined;
 		const captureFetch: typeof fetch = async (input, init) => {
 			// The SDK has fully merged its headers by now (including its built-in
@@ -356,7 +274,7 @@ export function createPoolRuntime(
 				logDebug("request.user_agent", { account: accountName, before: uaBefore, after: uaAfter });
 			}
 			const response = await (realFetch ?? globalThis.fetch)(input, fixedInit as RequestInit);
-			seen = { status: response.status, retryAfterMs: parseRetryAfterMs(response.headers) };
+			seen = response.status;
 			return response;
 		};
 		const streamOptions = {
@@ -436,7 +354,10 @@ export function createPoolRuntime(
 				outer.end();
 				return;
 			}
-			const accounts = planAccountOrder(expandPoolAccounts(definition, Object.keys(state.accounts), state.active));
+			const accounts = planAccountOrder(
+				expandPoolAccounts(definition, Object.keys(state.accounts), state.active),
+				poolCursor.get(definition.name),
+			);
 			if (accounts.length === 0) {
 				outer.push(
 					errorEvent(
@@ -476,7 +397,9 @@ export function createPoolRuntime(
 				if (!failure) {
 					// The iteration forwarded every event including the completing
 					// `done`, which has already resolved the outer stream's result.
-					clearPoolFailure(accountName);
+					// The account that worked becomes the next request's starting
+					// point: rotation only moves on failure.
+					setPoolCursor(definition.name, accountName);
 					if (!sawContent) {
 						// Defensive: a stream that ended without any event at all.
 						outer.push(errorEvent(`pi-multi-account: account "${accountName}" produced no response.`));
@@ -485,9 +408,9 @@ export function createPoolRuntime(
 					return;
 				}
 
-				const response = captured();
+				const capturedStatus = captured();
 				const errorBody = (failure as { error?: { errorMessage?: string } }).error;
-				const errorStatus = response?.status ?? statusFromMessage(errorBody?.errorMessage ?? "");
+				const errorStatus = capturedStatus ?? statusFromMessage(errorBody?.errorMessage ?? "");
 				const failureMessage = errorBody?.errorMessage ?? "";
 				const aborted = signal?.aborted === true || (failure as { reason?: string }).reason === "aborted";
 				const eligible = !aborted && !sawContent && isFailoverEligible(errorStatus);
@@ -497,16 +420,17 @@ export function createPoolRuntime(
 					return;
 				}
 
-				// Record why this account is being skipped, then move on.
+				// A rejected token still gets marked for refresh: that is credential
+				// health, not rotation policy — it is what lets the account come
+				// back on its own the next time the rotation reaches it.
 				if (errorStatus === 401 || errorStatus === 403) {
 					markCredentialSuspect("anthropic", accountName, `provider answered ${errorStatus}`);
 				}
-				recordPoolFailure(accountName, errorStatus!, {
-					retryAfterMs: response?.retryAfterMs,
-					detail: failureMessage.slice(0, 200) || undefined,
-				});
 				lastFailure = failure;
 				const next = accounts[index + 1];
+				// Move the rotation on, so the next request starts at the account
+				// this one is about to try instead of failing here again.
+				if (next !== undefined) setPoolCursor(definition.name, next);
 				logInfo("pool.failover", {
 					pool: definition.name,
 					from: accountName,
@@ -514,6 +438,7 @@ export function createPoolRuntime(
 					status: errorStatus,
 					attempt: index + 1,
 					of: accounts.length,
+					detail: failureMessage.slice(0, 200) || undefined,
 				});
 				pendingNotices.push({
 					message: next

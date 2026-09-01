@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { ALIAS_PREFIX, aliasAccountName } from "./aliases.ts";
 import { credentialSummary, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
-import { coolingAccountNames, isPoolProvider, lastPoolAccount, poolFirstPick, poolLabel } from "./pool.ts";
+import { isPoolProvider, lastPoolAccount, poolFirstPick, poolLabel } from "./pool.ts";
 import { accountsNeedingRelogin } from "./refresh.ts";
 
 const BILLING_STATUS_KEY = "pi-multi-account";
@@ -33,8 +33,6 @@ export async function updateBillingStatus(store: AccountStore, ctx: ExtensionCon
 			const warning = failedAccounts.length > 0
 				? ` · ${failedAccounts.length} account${failedAccounts.length === 1 ? "" : "s"} need re-login`
 				: "";
-			const cooling = coolingAccountNames();
-			const coolingNote = poolName !== undefined && cooling.length > 0 ? ` · cooling: ${cooling.join(", ")}` : "";
 			// A pool provider serves whichever account answered; a pinned alias
 			// reports its own account; the native provider names its first pick.
 			const label = sessionAccount
@@ -42,7 +40,7 @@ export async function updateBillingStatus(store: AccountStore, ctx: ExtensionCon
 				: poolName !== undefined
 					? poolLabel(poolName, account)
 					: `anthropic: ${account}`;
-			ctx.ui.setStatus(BILLING_STATUS_KEY, `${label} · subscription billing${warning}${coolingNote}`);
+			ctx.ui.setStatus(BILLING_STATUS_KEY, `${label} · subscription billing${warning}`);
 		} else {
 			ctx.ui.setStatus(BILLING_STATUS_KEY, undefined);
 		}

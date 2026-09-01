@@ -56,7 +56,7 @@ import {
 	markRunFinished,
 	markRunStarted,
 } from "./refresh.ts";
-import { clearPoolFailure, createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount, recordPoolFailure } from "./pool.ts";
+import { createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount } from "./pool.ts";
 import { registerPoolCommands } from "./pool-commands.ts";
 import { readPools } from "./pools-store.ts";
 import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
@@ -154,10 +154,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (!isPool && providerId !== "anthropic" && !providerId.startsWith(ALIAS_PREFIX)) return;
 		if (event.status < 400) {
 			logDebug("response.ok", { provider: providerId, status: event.status });
-			const account = providerId.startsWith(ALIAS_PREFIX)
-				? providerId.slice(ALIAS_PREFIX.length)
-				: lastPoolAccount(isPool ? providerId : undefined);
-			if (account) clearPoolFailure(account);
 		} else {
 			void (async () => {
 				try {
@@ -182,11 +178,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 								`if this repeats, re-login that account in /accounts.`,
 							"warning",
 						);
-					}
-					// Rate limits and auth rejections cool the account down so the
-					// aggregate pool prefers other accounts for a while.
-					if (event.status === 429 || event.status === 401 || event.status === 403) {
-						recordPoolFailure(account, event.status);
 					}
 				} catch (error) {
 					logError("response.rejected_handler_failed", { detail: errorMessage(error) });

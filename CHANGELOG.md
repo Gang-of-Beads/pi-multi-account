@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0
+
+Replaces the pool's cooldown policy with plain rotation.
+
+- **No more cooldowns, backoff or `retry-after` bookkeeping.** A pool now uses
+  one account at a time: whichever account last worked keeps serving, and an
+  error rotates to the next account in the pool. Nothing is scheduled and
+  nothing expires, so an account is never "parked" for minutes at a time.
+- Within a single request every account is still tried before the request
+  fails, so a failure means the whole pool failed.
+- A 401/403 still marks that account's credential for refresh (credential
+  health, not rotation policy), so it heals itself by the time the rotation
+  reaches it again.
+- The status footer drops the `· cooling: …` note; `/pools` drops its cooling
+  column. New debug event `pool.cursor` records where the rotation moved.
+- Removed: `recordPoolFailure`, `clearPoolFailure`, `coolingAccountNames`,
+  `parseRetryAfterMs`.
+
 ## 0.6.2
 
 Keeps the status footer meaningful on a pool model.

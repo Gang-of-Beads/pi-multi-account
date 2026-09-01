@@ -17,7 +17,7 @@ import type {
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { parseAccountName } from "@narumitw/pi-accounts/src/accounts.ts";
 import { logInfo } from "./debug-log.ts";
-import { coolingAccountNames, type PoolRuntime } from "./pool.ts";
+import { type PoolRuntime } from "./pool.ts";
 import {
 	checkPoolName,
 	deletePool,
@@ -64,13 +64,12 @@ async function storedAccountNames(store: AccountStore): Promise<string[]> {
 }
 
 /** One-line status of a pool, for `/pools`. */
-function describePool(definition: PoolDefinition, available: string[], cooling: string[]): string {
+function describePool(definition: PoolDefinition, available: string[]): string {
 	const serving = definition.accounts === "all"
 		? available
 		: definition.accounts.filter((account) => available.includes(account));
 	const members = definition.accounts === "all" ? "all accounts (dynamic)" : definition.accounts.join(", ");
-	const coolingNote = cooling.length > 0 ? ` · cooling: ${cooling.join(", ")}` : "";
-	return `${definition.name} — ${members} · serving: ${serving.length > 0 ? serving.join(", ") : "(none available)"}${coolingNote}`;
+	return `${definition.name} — ${members} · serving: ${serving.length > 0 ? serving.join(", ") : "(none available)"}`;
 }
 
 function splitArgs(args: string): string[] {
@@ -207,9 +206,8 @@ export function registerPoolCommands(
 				return;
 			}
 			const available = await storedAccountNames(store);
-			const cooling = coolingAccountNames();
 			ctx.ui.notify(
-				definitions.map((definition) => describePool(definition, available, cooling)).join("\n") +
+				definitions.map((definition) => describePool(definition, available)).join("\n") +
 					"\n\n/pool-create · /pool-add · /pool-remove · /pool-delete",
 				"info",
 			);

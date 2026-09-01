@@ -4,13 +4,13 @@
 
 1. **Multi-account OAuth switching** via [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts), so Anthropic, GitHub Copilot, and OpenAI Codex accounts can be managed from one `/accounts` menu.
 2. **Claude subscription billing bridging** for Anthropic OAuth (`sk-ant-oat...`) requests, by sending the Claude Code-style user-agent and `x-anthropic-billing-header` required to route usage to a Claude Pro / Max subscription instead of pay-as-you-go API billing / extra usage.
-3. **User-defined aggregate pools with automatic failover** (`/pool-create`): a pool binds a provider name you choose to a set of accounts, and requests through it walk the accounts in order — rate limits, auth rejections and overloads on one account automatically retry on the next.
+3. **User-defined aggregate pools with automatic failover** (`/pool-create`): a pool binds a provider name you choose to a set of accounts and uses them one at a time — a rate limit, auth rejection or overload on the current account rotates to the next one.
 
 It also includes:
 
 - automatic import of existing **Claude Code** sign-ins from this machine, with **you** choosing the account alias
 - per-account `anthropic-<account>` aliases in `/model` that **stay selected**, so `/model` and the footer always show which account a session talks to
-- user-created **aggregate pools** in `/model` under a name you choose (including `anthropic` itself, if you want the native provider to be the pool), with per-account cooldowns honoring `retry-after`
+- user-created **aggregate pools** in `/model` under a name you choose (including `anthropic` itself, if you want the native provider to be the pool), rotating one account at a time
 - automatic recovery when the active Anthropic account is deleted, so the entire `anthropic` provider does not disappear from `/model`
 
 ---
@@ -33,13 +33,13 @@ It also includes:
 | `/sub-accounts` | Detect subscription-backed accounts already available on this machine (currently Claude Code) and show whether they are imported |
 | `/sub-import [name...]` | Import detected subscription accounts; asks for a name per account interactively, or takes names as arguments |
 | `anthropic-<name>` provider aliases | Every named Anthropic account appears directly in `/model`, e.g. `anthropic-personal`, `anthropic-work`, and stays selected for the whole session |
-| `/pool-create [name] [accounts...]` | Create an aggregate pool interactively: a provider id you choose that fails over across its accounts on 429/401/403/5xx |
-| `/pools` | List pools and their status (which accounts serve, which are cooling down) |
+| `/pool-create [name] [accounts...]` | Create an aggregate pool interactively: a provider id you choose that rotates across its accounts on 429/401/403/5xx |
+| `/pools` | List pools and their status (which accounts they can serve from) |
 | `/pool-add` / `/pool-remove` / `/pool-delete` | Manage pool membership and lifecycle interactively |
 | `/accounts` → *Rename account* | Rename a stored account (e.g. an auto-imported `cc-max` → `work`); the alias and the current session follow the new name |
 | Claude subscription billing bridge | Adds the Claude Code style user-agent and billing header to Anthropic OAuth requests so usage is charged to the Claude subscription path |
 | Active-account auto-heal | If the current active Anthropic account is deleted, the next `session_start` automatically activates the first remaining account |
-| Status footer | Shows `anthropic-<account> · subscription billing` when a session is pinned to an alias, `<pool> pool: <account> · subscription billing` for a pool (with cooling accounts), otherwise `anthropic: <active-account> · subscription billing` |
+| Status footer | Shows `anthropic-<account> · subscription billing` when a session is pinned to an alias, `<pool> pool: <account> · subscription billing` for a pool (the account serving it now), otherwise `anthropic: <active-account> · subscription billing` |
 
 ---
 
@@ -135,16 +135,21 @@ when that account is rate-limited (429), rejected (401/403) or overloaded
 (5xx/529), the request is retried on `work` — transparently, before any
 text was streamed, so output is never duplicated.
 
-### Ordering and cooldowns
+### Rotation, not scheduling
 
-- The pool tries its accounts in the order you defined (an "all" pool follows
-  the store, active account first).
-- A failed account is put on cooldown: rate limits honor the server's
-  `retry-after` (doubling per repeat, capped at 15 minutes); auth failures get
-  a short cooldown and their credential is marked for refresh (the same
-  machinery that heals revoked tokens). The footer lists cooling accounts.
-- Cooldowns only reorder; a cooled-down account is still tried when every
-  other account failed too.
+- The pool uses **one account at a time**: whichever account last worked keeps
+  serving, and an error moves the rotation to the next account in the pool.
+- There is no cooldown clock, no backoff and no `retry-after` bookkeeping. A
+  failing account simply stops being the starting point; it is tried again
+  when the rotation comes back around to it.
+- Within one request, every account is tried before the request fails, so a
+  failure means the whole pool failed.
+- A 401/403 still marks that account's credential for refresh (the same
+  machinery that heals revoked tokens), so it can recover on its own by the
+  time the rotation reaches it again.
+- The rotation lives in the running process: a long-lived host (pi web's
+  sessiond) keeps it across sessions; a one-shot `pi -p` starts at the
+  definition's first account.
 
 ### The reserved name
 
@@ -326,7 +331,7 @@ surprise 401 raises after the fact.
 | `refresh.superseded` | Another writer had already replaced the token this process was holding |
 | `refresh.backoff` | A credential that needs a re-login, being left alone until `retryAt` |
 | `credential.suspect` / `response.rejected` | The provider rejected a token, with the request id |
-| `pool.failover` / `pool.cooldown` / `pool.recovered` | Aggregate pool failover decisions, per account and status |
+| `pool.failover` / `pool.cursor` | Which account a pool rotated away from, to, and why |
 | `pool.saved` / `pool.deleted` / `pool.registered` | Pool definition changes and provider registrations |
 | `active.switched` / `model.selected` | Account and model changes made by this session |
 
