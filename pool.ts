@@ -499,10 +499,35 @@ export function createPoolRuntime(
 			runPool(definition, kind, model as ProviderModel, context, opts as Record<string, unknown> | undefined);
 		if (isNativeOverride) {
 			// The user explicitly chose the native id: inherit everything,
-			// replace only the request entry points.
+			// replace only the request entry points — except the OAuth auth
+			// method, which is deliberately dropped.
+			//
+			// Why: pi resolves a provider's credential before it ever calls
+			// stream, and resolveProviderAuth prefers a *stored* credential over
+			// everything else:
+			//
+			//   const stored = await readCredential(credentials, provider.id);
+			//   if (stored?.type === "oauth" && provider.auth.oauth) return resolveStoredOAuth(...)
+			//
+			// pi-accounts normally shadows that with a runtime api key, but the
+			// override is only installed once its session hooks have run. In the
+			// window before that — and whenever pi-accounts itself fails — the
+			// stored credential wins. On a machine whose native `/login anthropic`
+			// credential has gone stale, that path throws
+			// `invalid_grant: Refresh token not found or invalid` and takes the
+			// whole provider down, pool included: three healthy pooled accounts
+			// never get a chance, because resolution failed before stream.
+			//
+			// The pool does not need that credential — it resolves and refreshes
+			// its own accounts per request — so it must not advertise the auth
+			// method that makes the dead one reachable. `/login anthropic` moves
+			// to `/accounts`, which is where account management belongs once this
+			// extension is installed.
+			const { oauth: _droppedNativeOAuth, ...inheritedAuth } = (native as Provider).auth;
 			pi.unregisterProvider(NATIVE_POOL_NAME);
 			pi.registerProvider({
 				...(native as Provider),
+				auth: { ...inheritedAuth, apiKey: poolApiKeyAuth(definition) },
 				stream: stream("stream"),
 				streamSimple: stream("streamSimple"),
 			} as Provider);

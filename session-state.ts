@@ -61,6 +61,50 @@ export async function updateBillingStatus(store: AccountStore, ctx: ExtensionCon
 }
 
 /**
+ * Warn when pi's own stored Anthropic OAuth credential is still around.
+ *
+ * pi resolves a provider's credential before it calls stream, and a *stored*
+ * credential beats everything except pi-accounts' runtime api key — which is
+ * only installed once the account extension's session hooks have run. In the
+ * window before that, a stale `/login anthropic` credential is what pi tries,
+ * and a dead one fails the request with
+ * `invalid_grant: Refresh token not found or invalid` even though every pooled
+ * account is healthy. Dropping `auth.oauth` from the pool provider stops that
+ * from being a crash, but a stored credential pi cannot use still makes
+ * resolution return "not configured" in the same window.
+ *
+ * So: say it once, name the file, and give the exact command. Deliberately
+ * does not delete anything — credentials are the user's.
+ */
+let warnedAboutStoredNativeCredential = false;
+
+export async function warnAboutStoredNativeOAuth(store: AccountStore, ctx: ExtensionContext): Promise<void> {
+	if (warnedAboutStoredNativeCredential) return;
+	try {
+		const state = await store.readProviderAsync("anthropic");
+		if (Object.keys(state.accounts).length === 0) return; // nothing of ours to shadow it with
+		const authPath = join(process.env.HOME ?? "", ".pi", "agent", "auth.json");
+		const parsed = JSON.parse(await readFile(authPath, "utf8")) as Record<string, { type?: string; expires?: number }>;
+		const native = parsed.anthropic;
+		if (native?.type !== "oauth") return;
+		warnedAboutStoredNativeCredential = true;
+		const expiredForHours = typeof native.expires === "number"
+			? Math.round((Date.now() - native.expires) / 3_600_000)
+			: undefined;
+		const age = expiredForHours !== undefined && expiredForHours > 0 ? ` (expired ${expiredForHours}h ago)` : "";
+		logError("native_credential.stored", { expiredForHours, accounts: Object.keys(state.accounts).length });
+		ctx.ui.notify(
+			`pi still stores its own Anthropic OAuth login${age}, and pi resolves it before this extension's accounts. ` +
+				"If it is stale, requests fail with invalid_grant before any pooled account is tried. " +
+				"Remove it with: pi logout anthropic",
+			"warning",
+		);
+	} catch {
+		// No auth.json, or unreadable: nothing to warn about.
+	}
+}
+
+/**
  * Re-activate the first remaining account when the active one was deleted.
  *
  * pi-accounts clears `active` without picking a fallback, and with no active

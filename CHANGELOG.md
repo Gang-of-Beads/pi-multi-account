@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.1
+
+Fixes a stale native login taking the whole provider down, pool included.
+
+- **The native-override pool no longer advertises OAuth auth.** pi resolves a
+  provider's credential *before* it calls `stream`, and `resolveProviderAuth`
+  prefers a stored credential: `if (stored.type === "oauth" &&
+  provider.auth.oauth) return resolveStoredOAuth(...)`. pi-accounts normally
+  shadows that with a runtime api key, but only once its session hooks have
+  run. In the window before that, a stale `/login anthropic` credential is
+  what pi tries — and a dead one failed every request with
+  `invalid_grant: Refresh token not found or invalid` while three healthy
+  pooled accounts sat unused, because resolution failed before streaming.
+  Inheriting `auth.oauth` from the native provider is what made that path
+  reachable; the pool resolves and refreshes its own accounts per request and
+  never needed it. `/login anthropic` moves to `/accounts`.
+- **A stored native credential is now called out at session start**, with the
+  exact command to remove it (`pi logout anthropic`), because a credential pi
+  cannot use still makes resolution report "not configured" in that same
+  window. Nothing is deleted automatically — credentials are the user's.
+- Regression test: the native-override pool's auth must expose `apiKey` and
+  must not expose `oauth`.
+
 ## 0.7.0
 
 Replaces the pool's cooldown policy with plain rotation.

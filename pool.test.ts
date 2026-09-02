@@ -478,6 +478,25 @@ resetPoolStateForTesting();
 resetPoolsFileForTesting();
 
 {
+	// REGRESSION: the native-override pool must NOT advertise OAuth auth.
+	//
+	// pi resolves a provider credential before it calls stream, and a stored
+	// credential wins there. Inheriting the native provider's auth.oauth made a
+	// stale `/login anthropic` credential reachable, and a dead one failed every
+	// request with invalid_grant before a single pooled account was tried.
+	const store = await makeStore("personal", ["personal"]);
+	const fake = makeFakeProvider([{ status: 200, text: "native pool" }]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: NATIVE_POOL_NAME, accounts: "all" });
+	const auth = (providers["anthropic"] as { auth?: Record<string, unknown> }).auth ?? {};
+	assert.equal("oauth" in auth, false, "the pool must not offer an auth method it never uses");
+	assert.equal(typeof auth.apiKey, "object", "…and must offer its own api-key resolution instead");
+}
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+{
 	// A pool literally named "anthropic" overrides the native provider object.
 	const store = await makeStore("personal", ["personal"]);
 	const fake = makeFakeProvider([{ status: 200, text: "native pool" }]);

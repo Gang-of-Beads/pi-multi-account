@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-multi-account",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
   "type": "module",

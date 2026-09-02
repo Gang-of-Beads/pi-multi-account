@@ -66,6 +66,7 @@ import {
 	restoreAliasSelection,
 	reportPinnedAliasAccount,
 	updateBillingStatus,
+	warnAboutStoredNativeOAuth,
 } from "./session-state.ts";
 import {
 	importClaudeAccounts,
@@ -304,6 +305,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 		await restoreAliasSelection(pi, store, ctx);
 		await reportPinnedAliasAccount(store, ctx);
+		await warnAboutStoredNativeOAuth(store, ctx);
 		await updateBillingStatus(store, ctx);
 		reportForeignStoreChanges(ctx);
 	});
