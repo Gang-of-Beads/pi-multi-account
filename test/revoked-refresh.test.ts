@@ -23,7 +23,7 @@ import {
 	refreshFailureDetail,
 	resetRefreshFailuresForTesting,
 	resetSuspectCredentialsForTesting,
-} from "./refresh.ts";
+} from "../src/refresh.ts";
 
 /** Log entries of one kind, read back from the file the extension actually writes. */
 function logEvents(event: string): Record<string, unknown>[] {

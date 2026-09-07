@@ -1,531 +1,124 @@
 # pi-multi-account
 
-`pi-multi-account` adds three capabilities to pi:
+A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription billing, and optional account failover.
 
-1. **Multi-account OAuth switching** via [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts), so Anthropic, GitHub Copilot, and OpenAI Codex accounts can be managed from one `/accounts` menu.
-2. **Claude subscription billing bridging** for Anthropic OAuth (`sk-ant-oat...`) requests, by sending the Claude Code-style user-agent and `x-anthropic-billing-header` required to route usage to a Claude Pro / Max subscription instead of pay-as-you-go API billing / extra usage.
-3. **User-defined aggregate pools with automatic failover** (`/pool-create`): a pool binds a provider name you choose to a set of accounts and uses them one at a time — a rate limit, auth rejection or overload on the current account rotates to the next one.
-
-It also includes:
-
-- automatic import of existing **Claude Code** sign-ins from this machine, with **you** choosing the account alias
-- per-account `anthropic-<account>` aliases in `/model` that **stay selected**, so `/model` and the footer always show which account a session talks to
-- user-created **aggregate pools** in `/model` under a name you choose (including `anthropic` itself, if you want the native provider to be the pool), rotating one account at a time
-- automatic recovery when the active Anthropic account is deleted, so the entire `anthropic` provider does not disappear from `/model`
-
----
+- Manage Anthropic, GitHub Copilot, and OpenAI Codex accounts with `/accounts`.
+- Import existing Claude Code sign-ins and expose pinned `anthropic-<name>` providers in `/model`.
+- Send Claude Code-style billing metadata for Anthropic OAuth (`sk-ant-oat...`) requests.
+- Create aggregate pools that fail over to another Anthropic account on 401/403/408/429/5xx errors before output starts.
 
 ## Compatibility
 
-- **Tested with pi**: `0.84.1`
-- **Runtime model**: TypeScript extension loaded directly by pi through `jiti` (no prebuild required)
-- **Credential discovery**:
-  - primarily supports **macOS Keychain** for Claude Code detection
-  - also supports `~/.claude/.credentials.json`
+- Tested with pi `0.85.1`
+- Runs directly as TypeScript through pi's `jiti` loader
+- Claude Code credentials are discovered from macOS Keychain or `~/.claude/.credentials.json`
 
----
+## Install
 
-## Features
-
-| Feature | What it does |
-| --- | --- |
-| `/accounts` | Manage named OAuth accounts for Anthropic / GitHub Copilot / OpenAI Codex and switch the active account |
-| `/sub-accounts` | Detect subscription-backed accounts already available on this machine (currently Claude Code) and show whether they are imported |
-| `/sub-import [name...]` | Import detected subscription accounts; asks for a name per account interactively, or takes names as arguments |
-| `anthropic-<name>` provider aliases | Every named Anthropic account appears directly in `/model`, e.g. `anthropic-personal`, `anthropic-work`, and stays selected for the whole session |
-| `/pool-create [name] [accounts...]` | Create an aggregate pool interactively: a provider id you choose that rotates across its accounts on 429/401/403/5xx |
-| `/pools` | List pools and their status (which accounts they can serve from) |
-| `/pool-add` / `/pool-remove` / `/pool-delete` | Manage pool membership and lifecycle interactively |
-| `/accounts` → *Rename account* | Rename a stored account (e.g. an auto-imported `cc-max` → `work`); the alias and the current session follow the new name |
-| Claude subscription billing bridge | Adds the Claude Code style user-agent and billing header to Anthropic OAuth requests so usage is charged to the Claude subscription path |
-| Active-account auto-heal | If the current active Anthropic account is deleted, the next `session_start` automatically activates the first remaining account |
-| Status footer | Shows `anthropic-<account> · subscription billing` when a session is pinned to an alias, `<pool> pool: <account> · subscription billing` for a pool (the account serving it now), otherwise `anthropic: <active-account> · subscription billing` |
-
----
-
-## Installation
-
-> Recommended: install it as a **pi package**, so it can be managed with `pi install`, `pi update`, and `pi remove`.
-
-### Option A: install from the private GitHub repo
-
-If your machine has access to the private repository:
-
-#### SSH
+Install as a pi package so pi can manage updates:
 
 ```bash
 pi install git:git@github.com:Gang-of-Beads/pi-multi-account.git@v0.7.0
-```
-
-#### HTTPS
-
-```bash
-pi install git:https://github.com/Gang-of-Beads/pi-multi-account.git@v0.7.0
-```
-
-Then run:
-
-```bash
-/reload
-```
-
-Or simply restart pi.
-
-### Option B: install from a local path
-
-```bash
+# or
 pi install /absolute/path/to/pi-multi-account
 ```
 
-### Option C: install by cloning into the extensions directory
+Restart pi or run `/reload`.
 
-```bash
-git clone git@github.com:Gang-of-Beads/pi-multi-account.git \
-  ~/.pi/agent/extensions/pi-multi-account
-```
-
-Then:
-
-```bash
-/reload
-```
-
----
+> Remove any separately installed `@narumitw/pi-accounts` package first, otherwise its commands and provider logic load twice:
+>
+> ```bash
+> pi remove npm:@narumitw/pi-accounts
+> ```
 
 ## Quick start
 
-Recommended first-run flow:
+1. Run `/sub-accounts` to see detected Claude Code accounts.
+2. Run `/sub-import` and choose aliases, or pass names: `/sub-import personal work`.
+3. Use `/accounts` to manage accounts and choose the native active account.
+4. In `/model`, choose either `anthropic/<model>` (active account) or `anthropic-<name>/<model>` (pinned account).
 
-1. `/sub-accounts`  
-   See which Claude Code subscription accounts are already detectable on this machine.
+The footer shows the selected account and `subscription billing` when applicable.
 
-2. `/sub-import`  
-   Import those accounts into the `pi-accounts` store, naming each one yourself. On an empty Anthropic account store, an interactive session asks the same question on startup instead of importing silently.
+## Pools and failover
 
-3. `/accounts`  
-   Verify the active account and switch if needed.
-
-4. `/model`  
-   Choose either:
-   - native `anthropic/...` models, which use the current active account
-   - or `anthropic-<name>/...`, which pins a specific named account for this session and keeps showing it in `/model` and the footer
-
-5. Check the footer  
-   It should show:
-
-   ```text
-   (anthropic-work) claude-opus-5 · medium
-   anthropic-work · subscription billing
-   ```
-
----
-
-## Aggregate pools and failover
-
-A pool is a provider whose requests automatically retry on another account:
+Create a pool with an ordered account list:
 
 ```text
 /pool-create team personal work
 ```
 
-The flow asks for anything you leave out: the name (it becomes the provider id
-in `/model`), and the accounts — "All accounts (dynamic)" or a specific,
-ordered list. Once created, `team/claude-opus-5` tries `personal` first, and
-when that account is rate-limited (429), rejected (401/403) or overloaded
-(5xx/529), the request is retried on `work` — transparently, before any
-text was streamed, so output is never duplicated.
+Then select `team/<model>` in `/model`. The pool tries one account at a time, rotates after an eligible failure, and retries the same request with the next account only before any content has streamed. It has no cooldown or retry-after scheduler; a failed account is simply no longer the next starting point.
 
-### Rotation, not scheduling
-
-- The pool uses **one account at a time**: whichever account last worked keeps
-  serving, and an error moves the rotation to the next account in the pool.
-- There is no cooldown clock, no backoff and no `retry-after` bookkeeping. A
-  failing account simply stops being the starting point; it is tried again
-  when the rotation comes back around to it.
-- Within one request, every account is tried before the request fails, so a
-  failure means the whole pool failed.
-- A 401/403 still marks that account's credential for refresh (the same
-  machinery that heals revoked tokens), so it can recover on its own by the
-  time the rotation reaches it again.
-- The rotation lives in the running process: a long-lived host (pi web's
-  sessiond) keeps it across sessions; a one-shot `pi -p` starts at the
-  definition's first account.
-
-### The reserved name
-
-A pool named `anthropic` overrides pi's native Anthropic provider: plain
-`anthropic/<model>` becomes the aggregate, and every other consumer of the
-native provider (default model, `/model` picker, scripts) fails over too.
-Every other name registers a fresh provider, so nothing changes until you
-create a pool.
-
-### Storage and lifecycle
-
-- Definitions: `~/.pi/agent/pi-multi-account-pools.json`
-  (`PI_MULTI_ACCOUNT_POOLS_FILE` moves it).
-- Re-registered on every session start; `all` pools pick up new accounts
-  automatically, and deleting an account never breaks a pool — it just serves
-  fewer.
-- `/pool-remove` on an "all" pool freezes it into the explicit remainder.
-- `PI_MULTI_ACCOUNT_FAILOVER=0` disables pool registration entirely.
-
----
-
-## How pi installs and loads this package
-
-This repository follows the **Pi Package** format.
-
-Its `package.json` includes:
-
-```json
-{
-  "pi": {
-    "extensions": ["./index.ts"]
-  }
-}
-```
-
-That means pi can install it directly as a package with:
-
-- `pi install git:...`
-- `pi install /path/to/package`
-
-At install time, pi will:
-
-- clone or copy the package
-- run `npm install`
-- load the TypeScript extension through `jiti`
-
-And `/reload` can hot-reload installed packages and auto-discovered extensions.
-
-Because of that, this repository works both as:
-
-- a GitHub-hosted installable pi package
-- a local extension directory
-
----
+A pool named `anthropic` deliberately replaces the native Anthropic provider, so `anthropic/<model>` also fails over. All pools are stored in `~/.pi/agent/pi-multi-account-pools.json` and are restored at session start.
 
 ## Commands
 
-### `/accounts`
+| Command | Purpose |
+| --- | --- |
+| `/accounts` | Add, switch, rename, re-login, or remove named OAuth accounts |
+| `/sub-accounts` | List Claude Code accounts available for import |
+| `/sub-import [name...]` | Import detected accounts; names accept `A-Za-z0-9._-` (max 64 chars) |
+| `/anthropic-account-providers` | Re-sync `anthropic-<name>` entries in `/model` |
+| `/pools` | List aggregate pools |
+| `/pool-create [name] [accounts...]` | Create a pool; omitted accounts can be chosen interactively |
+| `/pool-add`, `/pool-remove`, `/pool-delete` | Change or delete a pool |
 
-Provided by `@narumitw/pi-accounts`.
+Imported credentials are read-only: this package never writes into Claude Code's own credential storage.
 
-Use it to:
-
-- list provider accounts
-- switch the active account
-- delete accounts
-- add new OAuth accounts
-
-Persistent store:
-
-- `~/.pi/agent/pi-accounts.json`
-
-### `/sub-accounts`
-
-Lists subscription-backed accounts that can be imported.
-
-Current sources:
-
-- Claude Code credentials stored in the macOS Keychain
-- `~/.claude/.credentials.json`
-
-### `/sub-import [name...]`
-
-Imports detected subscription-backed accounts into the `pi-accounts` Anthropic store.
-
-Behavior:
-
-- with no arguments, asks for one alias per detected account (blank answer falls back to `cc`, `cc-pro`, `cc-max`)
-- supports custom names as arguments, for example:
-
-```bash
-/sub-import claude-main claude-work
-```
-
-- names are validated (`A-Za-z0-9._-`, max 64 chars) and `default` is reserved for pi's own login
-- accounts can be renamed later from `/accounts` → *Rename account*
-
-- reads Claude Code credentials in **read-only** mode
-- does **not** write anything back into Claude Code's own credential storage
-
-### `/anthropic-account-providers`
-
-Force-resyncs the `anthropic-<name>` provider aliases shown in `/model`.
-
----
-
-## How the billing bridge works
-
-pi's built-in Anthropic OAuth path already sends:
-
-- a Claude Code identity block
-- Anthropic OAuth bearer tokens
-- the expected beta headers
-
-But that alone is not enough to consistently hit the Claude subscription billing path.
-
-This extension adds two missing pieces:
-
-1. a full Claude Code user-agent:
-
-```text
-claude-cli/<version> (external, sdk-cli)
-```
-
-2. a payload-level billing header block:
-
-```text
-x-anthropic-billing-header
-```
-
-Together, those make Anthropic treat the request as Claude Code-style subscription traffic instead of a normal API request.
-
-### Cases that are intentionally skipped
-
-The billing injection is skipped for:
-
-- non-Claude models
-- non-Anthropic OAuth requests
-- plain API key requests
-- GitHub Copilot / Codex traffic
-
----
-
-## Environment variables
+## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run auto-import when the Anthropic account store is empty |
-| `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space separated account names used by first-run import, e.g. `work,personal`. When set, import runs immediately without asking |
-| `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to disable `anthropic-<name>` provider aliases |
-| `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable aggregate pool registration |
-| `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Where pool definitions are stored |
-| `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary installation that shares the credential file, so only one installation rotates tokens |
-| `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` adds per-request credential resolution; `0`/`off` disables the debug log |
-| `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | Where the debug log is written |
-| `ANTHROPIC_CLI_VERSION` | `2.1.160` | Overrides the Claude CLI version used in the billing header and user-agent |
-| `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | Overrides the user-agent entrypoint |
-| `ANTHROPIC_USER_AGENT` | auto-generated | Fully overrides the Anthropic user-agent |
+| `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run import |
+| `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space-separated first-run aliases; imports without prompting |
+| `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide `anthropic-<name>` providers |
+| `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable pools |
+| `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Pool definitions file |
+| `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
+| `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
+| `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | JSONL diagnostics file |
+| `ANTHROPIC_CLI_VERSION` | `2.1.217` | Billing-header and user-agent version override |
+| `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | User-agent entrypoint override |
+| `ANTHROPIC_USER_AGENT` | generated | Complete user-agent override |
 
----
-
-## Storage and runtime behavior
-
-### Account storage
-
-- `~/.pi/agent/pi-accounts.json`
-
-### Debug log
-
-`~/.pi/agent/pi-multi-account.log`, one JSON object per line. No command reads
-it; it is a file, meant for `tail -f` and for answering the questions a
-surprise 401 raises after the fact.
-
-| Event | Meaning |
-| --- | --- |
-| `session.account` | Which account a session resolved, and from where (pinned alias vs stored active) |
-| `store.changed` | The account store changed; `origin=foreign` means another process did it |
-| `refresh.due` / `refresh.succeeded` / `refresh.failed` | Token rotation, with before/after fingerprints |
-| `refresh.superseded` | Another writer had already replaced the token this process was holding |
-| `refresh.backoff` | A credential that needs a re-login, being left alone until `retryAt` |
-| `credential.suspect` / `response.rejected` | The provider rejected a token, with the request id |
-| `pool.failover` / `pool.cursor` | Which account a pool rotated away from, to, and why |
-| `pool.saved` / `pool.deleted` / `pool.registered` | Pool definition changes and provider registrations |
-| `active.switched` / `model.selected` | Account and model changes made by this session |
-
-Tokens are never written to the log; each one appears as an 8-character SHA-256
-fingerprint, which is enough to see that a token changed — or that two
-installations hold the same one — without leaking the secret.
-
-A failure that keeps repeating is logged once, not once per attempt: the retry
-itself backs off (a minute, doubling to fifteen; six hours for an
-`invalid_grant` that only a re-login can fix), and a stored credential that
-changes — someone re-logged in — is retried immediately.
+The account store is `~/.pi/agent/pi-accounts.json`. Logs never contain tokens; they use short SHA-256 fingerprints. Inspect them with:
 
 ```bash
 tail -f ~/.pi/agent/pi-multi-account.log
 ```
 
-### Auto-import sources
-
-- macOS Keychain services: `Claude Code-credentials` / `Claude Code-credentials-*`
-- `~/.claude/.credentials.json`
-
-### Alias provider behavior
-
-`anthropic-<name>` aliases are runtime providers that:
-
-- are registered during extension bootstrap (so `pi -p --model anthropic-work/...`, `--models` cycling, and session restore all resolve them) and re-synced on `session_start`
-- resolve their **own** account's OAuth credential per request, refreshing it under the shared account-store lock, independently of every other alias
-- hand pi the raw `sk-ant-oat...` token as the request api key, which is what puts pi's Anthropic adapter into Claude Code / OAuth mode (bearer auth, oauth betas, identity block, Claude Code tool names) and therefore keeps subscription billing working exactly like native `anthropic/...`
-- stay selected: choosing `anthropic-work/claude-opus-5` keeps that provider for the session and also points the stored active account at `work`, so `/accounts` agrees with the last explicit choice
-
-A persisted `defaultProvider: "anthropic-work"` in `~/.pi/agent/settings.json` is kept as-is, and only rewritten to `anthropic` if that account no longer exists.
-
-### Print mode
-
-`pi -p --model anthropic-work/claude-haiku-4-5` works: aliases exist before the model is resolved. First-run import in a non-TTY run does not prompt; it uses `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` when set, otherwise generated names.
-
----
-
-## Upgrade and migration notes
-
-If you previously used:
-
-- a custom `anthropic-multi-account.ts`
-- a custom `anthropic-account-providers.ts`
-- a standalone `@narumitw/pi-accounts` package install
-
-remove duplicate loading sources so the same `/accounts` menu or provider logic is not loaded twice.
-
-### Remove a standalone pi-accounts package
-
-```bash
-pi remove npm:@narumitw/pi-accounts
-```
-
-### Check your settings and extension directories
-
-Inspect:
-
-- `~/.pi/agent/settings.json`
-- `~/.pi/agent/extensions/`
-
-Make sure only one copy of this behavior is active.
-
----
-
 ## Troubleshooting
 
-### 1) `anthropic` does not appear in `/model`
+- **`anthropic` is absent from `/model`:** add or select an account in `/accounts`, then `/reload`.
+- **Deleted aliases remain:** run `/reload`; session startup removes stale `anthropic-<name>` providers.
+- **`/sub-accounts` finds nothing:** confirm Claude Code is logged in and that Keychain or `~/.claude/.credentials.json` contains credentials.
+- **Another installation rotates shared tokens:** set `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0` on the passive installation.
 
-Common causes:
+## Security
 
-- there is no active Anthropic account
-- you deleted the active account
-- the current session has not been reloaded yet
-
-Try:
-
-1. `/accounts` to verify the active account
-2. `/reload`
-3. check whether the footer shows:
-
-```text
-anthropic: <name> · subscription billing
-```
-
-This extension auto-heals the active account on `session_start`, but you can always choose the active account manually in `/accounts`.
-
-### 2) Deleted account aliases still appear in `/model`
-
-Run:
-
-```bash
-/reload
-```
-
-The extension cleans stale `anthropic-<name>` aliases during `session_start`.
-
-### 3) `/sub-accounts` does not detect any Claude Code accounts
-
-Check:
-
-- whether Claude Code is actually logged in on this machine
-- whether the macOS Keychain contains `Claude Code-credentials...`
-- whether `~/.claude/.credentials.json` exists
-
-### 4) `/model` switched me back to plain `anthropic`
-
-That was the behavior of 0.4.3 – 0.4.7, which treated `anthropic-<name>` as a selection shortcut and normalized the session back to `anthropic/<model>`. Since 0.4.8 the alias stays selected. Upgrade, then `/reload`.
-
----
-
-## Security and policy note
-
-> Important: the Claude subscription billing bridge in this extension intentionally makes third-party pi requests look like Claude Code subscription requests.
-
-That means:
-
-- this is explicitly enabled by user request
-- it is different from using a normal Anthropic API key
-- for long-term use, you should keep an eye on Anthropic's terms for third-party CLI / subscription usage
-
-Also remember:
-
-- pi extensions run with full permissions on your machine
-- install only code you trust
-- `pi install git:...` and `pi install npm:...` both install executable code
-
----
+This package makes eligible Anthropic OAuth requests resemble Claude Code subscription traffic. Use it only when permitted by Anthropic's terms and your subscription. Pi extensions have full local system permissions; install only code you trust.
 
 ## Development
 
-### Repository layout
-
-| File | Responsibility |
-| --- | --- |
-| `index.ts` | Extension entrypoint: wiring and event handlers only |
-| `adapters.ts` | pi-accounts provider adapters, patched for Node 24 signals and credential metadata |
-| `refresh.ts` | Background refresh sweep, single-credential refresh, refresh-failure state |
-| `aliases.ts` | `anthropic-<account>` provider aliases shown by `/model` |
-| `pool.ts` | Aggregate pool runtime: failover loop, cooldowns, status capture |
-| `pools-store.ts` | User-defined pool definitions (name + accounts) on disk |
-| `pool-commands.ts` | `/pools`, `/pool-create`, `/pool-add/-remove/-delete` |
-| `accounts-menu.ts` | `/accounts`: login, re-login, switch, rename, remove |
-| `subscription-import.ts` | `/sub-accounts`, `/sub-import`, first-run interactive import |
-| `session-state.ts` | Which account a session uses, alias restore, footer status |
-| `debug-log.ts` | JSONL debug log: token fingerprints, never tokens |
-| `store-watch.ts` | Detects account-store changes made by other processes |
-| `billing.ts` | Claude Code user-agent and `x-anthropic-billing-header` injection |
-| `names.ts`, `errors.ts` | Account-name and error-shaping helpers |
-| `subscription-credentials.ts` | Claude Code credential discovery (Keychain, `~/.claude`) |
+```text
+src/   extension implementation and refresh CLI
+test/  runnable self-checks
+```
 
 ```bash
-cd ~/.pi/agent/extensions/pi-multi-account
 npm install
-npx tsc --noEmit --noUnusedLocals --noUnusedParameters
+npx tsc --noEmit
+for test in test/*.test.ts; do npx jiti "$test"; done
 ```
 
-Runnable checks:
-
-```bash
-npx jiti ./import-names.test.ts     # account-import naming
-npx jiti ./store-watch.test.ts      # foreign-writer detection
-npx jiti ./revoked-refresh.test.ts  # 401-driven refresh, backoff, log-once
-npx jiti ./wiring.test.ts           # event wiring + the log sink really writes
-npx jiti ./pool.test.ts             # pool ordering, cooldowns, failover
-```
-
-### Local testing
+The pi entrypoint is `src/index.ts`; local testing works with:
 
 ```bash
 pi -e /absolute/path/to/pi-multi-account
 ```
 
-Or place it directly in:
-
-```bash
-~/.pi/agent/extensions/pi-multi-account
-```
-
-Then run:
-
-```bash
-/reload
-```
-
----
-
-## Maintained by
-
-[Gang of Beads](https://github.com/Gang-of-Beads).
-
 ## Credits
 
-- Multi-account runtime support comes from [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts)
-- `billing.ts` and `subscription-credentials.ts` were adapted from [`pi-claude-auth`](https://github.com/pankajudhas81/pi-claude-auth) (MIT)
-
-See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for attribution and licensing notes.
+- Multi-account runtime: [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts)
+- Billing and credential-discovery code adapted from [`pi-claude-auth`](https://github.com/pankajudhas81/pi-claude-auth) (MIT); see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)

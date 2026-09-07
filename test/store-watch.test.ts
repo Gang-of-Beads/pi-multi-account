@@ -1,7 +1,7 @@
 process.env.PI_MULTI_ACCOUNT_LOG = "0";
 
 import assert from "node:assert/strict";
-import { describeChange, diffSnapshots, drainForeignChanges, snapshotProviderState, StoreObserver } from "./store-watch.ts";
+import { describeChange, diffSnapshots, drainForeignChanges, snapshotProviderState, StoreObserver } from "../src/store-watch.ts";
 
 const credential = (access: string, refresh = `${access}-r`) => ({ access, refresh, expires: 1 });
 

@@ -254,15 +254,15 @@ export function registerBillingLayer(pi: ExtensionAPI): void {
 		return undefined;
 	});
 
-	// NOTE: the provider-level `headers` registration above never reaches the
-	// wire (pi assembles request headers from model-level definitions and
-	// caller options only), and `before_provider_headers` fires before pi-ai
-	// merges its own UA — with no provider id on the event. The wire-level
-	// override lives in the request-time fetch wrappers instead (pool.ts
-	// captureFetch and the alias stream delegates), which run after the SDK's
-	// full header merge and are scoped to exactly the OAuth requests this
-	// extension authenticates. See applyUserAgentOverride.
-	void 0;
+	// Pi 0.85 invokes this after assembling the final request headers. Native
+	// Anthropic requests do not use the aliases/pools fetch wrappers below.
+	pi.on("before_provider_headers", (event, ctx) => {
+		if (ctx.model?.provider !== "anthropic") return;
+		const ua = event.headers["user-agent"];
+		if (typeof ua === "string" && ua.startsWith("claude-cli/")) {
+			event.headers["user-agent"] = buildUserAgent();
+		}
+	});
 }
 
 /**

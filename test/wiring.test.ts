@@ -19,14 +19,16 @@ process.env.PI_MULTI_ACCOUNT_LOG_FILE = logFile;
 // A stub host has no keychain flow to complete, and no accounts to import.
 process.env.PI_MULTI_ACCOUNT_AUTO_IMPORT = "0";
 
-const { default: extension } = await import("./index.ts");
+const { default: extension } = await import("../src/index.ts");
 
 const events: string[] = [];
 const commands: string[] = [];
+const on = (event: string) => {
+	events.push(event);
+};
 const pi = {
-	on: (event: string) => {
-		events.push(event);
-	},
+	on,
+	events: { on },
 	registerCommand: (name: string) => {
 		commands.push(name);
 	},

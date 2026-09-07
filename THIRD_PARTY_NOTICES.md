@@ -7,13 +7,13 @@ This project includes or adapts code from the following third-party projects:
 - Repository: https://github.com/pankajudhas81/pi-claude-auth
 - License: MIT
 - Adapted files in this repository:
-  - `billing.ts`
-  - `subscription-credentials.ts`
+  - `src/billing.ts`
+  - `src/subscription-credentials.ts`
 
 The original project is MIT licensed. Its license permits use, modification,
 and redistribution, provided the copyright and permission notice are preserved.
 That notice is reproduced here in full, as MIT requires, because roughly 480
-lines of `billing.ts` and `subscription-credentials.ts` derive from it:
+lines of `src/billing.ts` and `src/subscription-credentials.ts` derive from it:
 
 ```
 MIT License
