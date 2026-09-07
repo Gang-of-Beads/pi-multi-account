@@ -25,7 +25,7 @@ import {
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
-import { isCredentialSuspect, resetSuspectCredentialsForTesting } from "./refresh.ts";
+import { isCredentialSuspect, resetSuspectCredentialsForTesting } from "../src/refresh.ts";
 import {
 	createPoolRuntime,
 	drainPoolNotices,
@@ -37,7 +37,7 @@ import {
 	poolsEnabled,
 	resetPoolStateForTesting,
 	type BaseStreamHost,
-} from "./pool.ts";
+} from "../src/pool.ts";
 import {
 	checkPoolName,
 	deletePool,
@@ -46,7 +46,7 @@ import {
 	readPools,
 	resetPoolsFileForTesting,
 	upsertPool,
-} from "./pools-store.ts";
+} from "../src/pools-store.ts";
 
 /** Log entries of one kind, read back from the file the extension actually writes. */
 function logEvents(event: string): Record<string, unknown>[] {

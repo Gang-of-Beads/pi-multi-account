@@ -47,7 +47,7 @@ writeFileSync(
 );
 
 const { AccountStore } = await import("@narumitw/pi-accounts/src/accounts.ts");
-const { reportPinnedAliasAccount } = await import("./session-state.ts");
+const { reportPinnedAliasAccount } = await import("../src/session-state.ts");
 
 const store = new AccountStore();
 

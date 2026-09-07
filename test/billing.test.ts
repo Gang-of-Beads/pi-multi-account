@@ -12,7 +12,7 @@
  * still be mutated.
  */
 import assert from "node:assert/strict";
-import { applyUserAgentOverride, buildBillingHeaderValue, buildUserAgent, injectBillingHeader } from "./billing.ts";
+import { applyUserAgentOverride, buildBillingHeaderValue, buildUserAgent, injectBillingHeader, registerBillingLayer } from "../src/billing.ts";
 
 const FULL_UA = buildUserAgent();
 
@@ -42,6 +42,19 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 		ua,
 		`a ${ua === undefined ? "missing" : "non-claude-cli"} UA is not rewritten`,
 	);
+}
+
+// The final-header hook fixes the native provider too; aliases and pools have
+// their own fetch wrappers because they replace the provider stream.
+{
+	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+	registerBillingLayer({
+		registerProvider: () => undefined,
+		on: (name: string, handler: (event: any, ctx: any) => unknown) => handlers.set(name, handler),
+	} as never);
+	const headers: Record<string, string> = { "user-agent": "claude-cli/2.1.75" };
+	await handlers.get("before_provider_headers")!({ headers }, { model: { provider: "anthropic" } });
+	assert.equal(headers["user-agent"], FULL_UA, "native Anthropic OAuth gets the final UA override");
 }
 
 // Billing header injection: only OAuth stealth payloads (Claude model + the
