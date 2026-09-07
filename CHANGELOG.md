@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Correct the native Anthropic credential warning: run `/logout` and select Anthropic.
+
 ## 0.8.2
 
 - Update Pi dependencies to 0.85.1 and `@narumitw/pi-accounts` to 0.52.0.
@@ -22,10 +26,10 @@ Fixes a stale native login taking the whole provider down, pool included.
   Inheriting `auth.oauth` from the native provider is what made that path
   reachable; the pool resolves and refreshes its own accounts per request and
   never needed it. `/login anthropic` moves to `/accounts`.
-- **A stored native credential is now called out at session start**, with the
-  exact command to remove it (`pi logout anthropic`), because a credential pi
-  cannot use still makes resolution report "not configured" in that same
-  window. Nothing is deleted automatically — credentials are the user's.
+- **A stored native credential is now called out at session start**, with
+  instructions to remove it through `/logout`, because a credential pi cannot
+  use still makes resolution report "not configured" in that same window.
+  Nothing is deleted automatically — credentials are the user's.
 - Regression test: the native-override pool's auth must expose `apiKey` and
   must not expose `oauth`.
 

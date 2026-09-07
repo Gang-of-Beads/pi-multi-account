@@ -96,7 +96,7 @@ export async function warnAboutStoredNativeOAuth(store: AccountStore, ctx: Exten
 		ctx.ui.notify(
 			`pi still stores its own Anthropic OAuth login${age}, and pi resolves it before this extension's accounts. ` +
 				"If it is stale, requests fail with invalid_grant before any pooled account is tried. " +
-				"Remove it with: pi logout anthropic",
+				"Remove it with /logout, then select Anthropic.",
 			"warning",
 		);
 	} catch {
