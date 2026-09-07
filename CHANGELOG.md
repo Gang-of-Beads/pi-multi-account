@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2
+
+- Update Pi dependencies to 0.85.1 and `@narumitw/pi-accounts` to 0.52.0.
+- Ensure native Anthropic OAuth requests receive the final Claude Code user-agent.
+- Move implementation to `src/` and runnable checks to `test/`.
+
 ## 0.8.1
 
 Fixes a stale native login taking the whole provider down, pool included.

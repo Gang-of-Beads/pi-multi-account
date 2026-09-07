@@ -18,7 +18,7 @@ A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription bil
 Install as a pi package so pi can manage updates:
 
 ```bash
-pi install git:git@github.com:Gang-of-Beads/pi-multi-account.git@v0.7.0
+pi install git:git@github.com:Gang-of-Beads/pi-multi-account.git@v0.8.2
 # or
 pi install /absolute/path/to/pi-multi-account
 ```
