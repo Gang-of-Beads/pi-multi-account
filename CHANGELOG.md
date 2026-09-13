@@ -305,3 +305,6 @@ Fixes a regression introduced by the 0.4.2 background refresh.
 - Adds `anthropic-<name>` model aliases
 - Cleans stale aliases on reload
 - Auto-heals missing active Anthropic account after deleting the active entry
+## 0.8.3
+
+- Resolve the wire client version dynamically: ANTHROPIC_CLI_VERSION env override, then a locally installed `claude --version`, then the pinned fallback (now 2.1.251). The gateway enforces a per-model minimum client version and rejected fable-5-1 from 2.1.217 with claude_code_version_too_old.

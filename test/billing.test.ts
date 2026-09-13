@@ -12,7 +12,19 @@
  * still be mutated.
  */
 import assert from "node:assert/strict";
-import { applyUserAgentOverride, buildBillingHeaderValue, buildUserAgent, injectBillingHeader, registerBillingLayer } from "../src/billing.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	applyUserAgentOverride,
+	buildBillingHeaderValue,
+	buildUserAgent,
+	CC_VERSION,
+	getCliVersion,
+	injectBillingHeader,
+	registerBillingLayer,
+	resetClaudeVersionCache,
+} from "../src/billing.ts";
 
 const FULL_UA = buildUserAgent();
 
@@ -91,9 +103,48 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	const pristineMessages = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
 	assert.equal(
 		system[0]!.text,
-		buildBillingHeaderValue(pristineMessages as never, "2.1.217", "sdk-cli"),
+		buildBillingHeaderValue(pristineMessages as never, "2.1.251", "sdk-cli"),
 		"the injected header matches buildBillingHeaderValue for the same input",
 	);
+}
+
+// Version resolution: env override > detected local claude > pinned fallback.
+{
+	resetClaudeVersionCache();
+	const fakeBin = makeDir();
+	writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\necho \"2.3.4 (Claude Code)\"\n", {
+		mode: 0o755,
+	});
+	const withPath = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
+
+	// No env, fake claude on PATH -> the detected version wins.
+	delete process.env.ANTHROPIC_CLI_VERSION;
+	const savedPath = process.env.PATH;
+	process.env.PATH = `${fakeBin}:${savedPath}`;
+	assert.equal(getCliVersion(), "2.3.4", "a locally installed claude is auto-detected");
+
+	// Memoized: a second call must not re-probe (remove the fake and check).
+	rmSync(join(fakeBin, "claude"));
+	assert.equal(getCliVersion(), "2.3.4", "the probe result is memoized");
+
+	// Env override beats everything.
+	process.env.ANTHROPIC_CLI_VERSION = "9.9.9";
+	resetClaudeVersionCache();
+	assert.equal(getCliVersion(), "9.9.9", "ANTHROPIC_CLI_VERSION wins over detection");
+
+	// No env, no claude on PATH -> pinned fallback.
+	delete process.env.ANTHROPIC_CLI_VERSION;
+	process.env.PATH = `${fakeBin}`; // nothing else findable
+	resetClaudeVersionCache();
+	assert.equal(getCliVersion(), CC_VERSION, "without a local claude the fallback applies");
+
+	process.env.PATH = savedPath;
+	rmSync(fakeBin, { recursive: true });
+	resetClaudeVersionCache();
+}
+
+function makeDir(): string {
+	return mkdtempSync(join(tmpdir(), "pi-ma-test-"));
 }
 
 console.log("ok: UA override in place, gating and idempotency, billing header injection");

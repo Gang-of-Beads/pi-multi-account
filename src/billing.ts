@@ -14,6 +14,7 @@
  * request identity so plan billing applies.
  */
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { errorMessage } from "./errors.ts";
 
@@ -29,15 +30,51 @@ const BILLING_SALT = "59cf53e54c78";
 // client-fingerprint signals Anthropic's "reverse engineering or duplicating
 // model outputs" enforcement keys on (see opencode-claude-auth #188 and
 // opencode-anthropic-auth #80, Apr 2026). Bump when that project bumps.
-export const CC_VERSION = "2.1.217";
+export const CC_VERSION = "2.1.251";
 
 // Billing entrypoint, mirrored in the user-agent's `(external, <entrypoint>)`
 // suffix. Overridable via CLAUDE_CODE_ENTRYPOINT.
 export const CC_ENTRYPOINT = "sdk-cli";
 
-/** Resolve the Claude Code CLI version (env override wins). */
+// undefined = probed and not found; null = not probed yet. Memoized because
+// getCliVersion() runs on every request and a `claude --version` spawn per
+// request would be absurd.
+let detectedClaudeVersion: string | undefined | null = null;
+
+/**
+ * Version of a locally installed Claude Code CLI, if one exists.
+ *
+ * A real install is the best version source there is: the gateway checks the
+ * claimed version against a per-model minimum (fable-5-1 rejects < 2.1.251
+ * with claude_code_version_too_old), and a machine with the genuine CLI has a
+ * version the gateway certainly accepts. No CLI on PATH, or a probe that
+ * misbehaves, resolves to undefined and the fallback applies.
+ */
+export function detectClaudeVersion(): string | undefined {
+	if (detectedClaudeVersion !== null) return detectedClaudeVersion;
+	try {
+		const out = execFileSync("claude", ["--version"], {
+			timeout: 3000,
+			encoding: "utf8",
+		});
+		detectedClaudeVersion = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(out)?.[1];
+	} catch {
+		detectedClaudeVersion = undefined;
+	}
+	return detectedClaudeVersion;
+}
+
+/** Test hook: forget the memoized probe result. */
+export function resetClaudeVersionCache(): void {
+	detectedClaudeVersion = null;
+}
+
+/**
+ * Resolve the Claude Code CLI version. Env override wins, then a locally
+ * installed claude, then the pinned fallback.
+ */
 export function getCliVersion(): string {
-	return process.env.ANTHROPIC_CLI_VERSION ?? CC_VERSION;
+	return process.env.ANTHROPIC_CLI_VERSION ?? detectClaudeVersion() ?? CC_VERSION;
 }
 
 /** Resolve the billing entrypoint (env override wins). */
