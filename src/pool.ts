@@ -500,18 +500,28 @@ export function createPoolRuntime(
 				: undefined;
 		},
 		async resolve({ signal }: { signal: AbortSignal }) {
-			signal.throwIfAborted();
-			// The stream wrapper picks the account per request; this resolution
-			// only tells pi the provider is configured, and hands the turn the
-			// first pick for anything that inspects the key before streaming.
-			const state = await store.readProviderAsync("anthropic");
-			const accounts = expandPoolAccounts(definition, Object.keys(state.accounts), state.active);
-			for (const accountName of accounts) {
-				const credential = await resolveAccount(accountName, signal, definition.name);
-				if (credential) return { auth: { apiKey: credential.access }, source: `pi-accounts:${accountName}` };
+			const t0 = Date.now();
+			const abortReason = () => String((signal.reason as { message?: string })?.message ?? signal.reason).slice(0, 120);
+			logInfo("diag.auth_resolve_entered", { pool: definition.name, alreadyAborted: signal.aborted, reason: signal.aborted ? abortReason() : undefined });
+			try {
+				signal.throwIfAborted();
+				// The stream wrapper picks the account per request; this resolution
+				// only tells pi the provider is configured, and hands the turn the
+				// first pick for anything that inspects the key before streaming.
+				const state = await store.readProviderAsync("anthropic");
+				logInfo("diag.auth_resolve_store_read", { pool: definition.name, elapsedMs: Date.now() - t0 });
+				const accounts = expandPoolAccounts(definition, Object.keys(state.accounts), state.active);
+				for (const accountName of accounts) {
+					const credential = await resolveAccount(accountName, signal, definition.name);
+					logInfo("diag.auth_resolve_account", { pool: definition.name, account: accountName, ok: credential !== undefined, elapsedMs: Date.now() - t0 });
+					if (credential) return { auth: { apiKey: credential.access }, source: `pi-accounts:${accountName}` };
+				}
+				logError("pool.unresolved", { pool: definition.name, reason: "no usable account credential" });
+				return undefined;
+			} catch (error) {
+				logError("diag.auth_resolve_threw", { pool: definition.name, elapsedMs: Date.now() - t0, aborted: signal.aborted, reason: signal.aborted ? abortReason() : errorMessage(error) });
+				throw error;
 			}
-			logError("pool.unresolved", { pool: definition.name, reason: "no usable account credential" });
-			return undefined;
 		},
 	});
 
