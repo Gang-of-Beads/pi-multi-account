@@ -521,7 +521,27 @@ export function createPoolRuntime(
 			// Forensics: proves whether the composer actually routed the turn to
 			// the pool. Its absence in a failing turn is the binary answer to
 			// "was the pool even in the loop".
-			logInfo("diag.pool_stream_entered", { pool: definition.name, kind, model: (model as ProviderModel)?.id });
+			const sig = (opts as { signal?: AbortSignal } | undefined)?.signal;
+			logInfo("diag.pool_stream_entered", {
+				pool: definition.name,
+				kind,
+				model: (model as ProviderModel)?.id,
+				hasSignal: sig !== undefined,
+				alreadyAborted: sig?.aborted ?? null,
+				abortReason: sig?.aborted ? String((sig.reason as { message?: string })?.message ?? sig.reason).slice(0, 120) : undefined,
+				optKeys: Object.keys((opts ?? {}) as object),
+			});
+			if (sig && !sig.aborted) {
+				const at = Date.now();
+				sig.addEventListener("abort", () => {
+					logInfo("diag.pool_signal_aborted", {
+						pool: definition.name,
+						elapsedMs: Date.now() - at,
+						reason: String((sig.reason as { message?: string })?.message ?? sig.reason).slice(0, 120),
+						stack: (new Error().stack ?? "").split("\n").slice(1, 9).join(" | ").slice(0, 600),
+					});
+				}, { once: true });
+			}
 			return runPool(definition, kind, model as ProviderModel, context as never, (opts ?? {}) as Record<string, unknown>);
 		};
 		if (isNativeOverride) {
