@@ -558,6 +558,10 @@ export function createPoolRuntime(
 			pi.unregisterProvider(NATIVE_POOL_NAME);
 			pi.registerProvider({
 				...(native as Provider),
+				// Visible marker: if the model picker shows "anthropic (pool)",
+				// this registration is the live provider; plain "anthropic" means
+				// the built-in survived and the pool never took over.
+				name: "anthropic (pool)",
 				auth: { apiKey: poolApiKeyAuth(definition) },
 				stream: stream("stream"),
 				streamSimple: stream("streamSimple"),
