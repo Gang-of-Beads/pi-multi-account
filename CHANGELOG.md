@@ -326,3 +326,6 @@ Fixes a regression introduced by the 0.4.2 background refresh.
 ## 0.8.8
 
 - Fetch-start diagnostics: every Anthropic request logs its initiation (with initiator stack), and aborts now record the native signal reason (TimeoutError vs client abort), so a silent turn failure identifies both the request and what killed it.
+## 0.8.9
+
+- Roll back the v0.8.5/0.8.6 registration experiments (string-form + dual-form): they chased the wrong layer. The real failure was pi-web-side - a session accumulating multiple runtimes that each send the turn's request, the losers aborted as 'This operation was aborted'. Keeps v0.8.4's error attribution and the v0.8.7/0.8.8 abort forensics.

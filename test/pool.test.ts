@@ -512,12 +512,10 @@ resetPoolsFileForTesting();
 	const { pi, providers } = stubPi();
 	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
 	runtime.registerPool({ name: NATIVE_POOL_NAME, accounts: "all" });
-	// String-form registration: the config carries a placeholder apiKey (the
-	// pool's stream resolves its own account credential) and declares `api`,
-	// which is what pi-web's composer gates the extension stream on.
+	// Object-form registration: the config carries the pool's own api-key
+	// resolver and must not offer the oauth method it never uses.
 	const reg = providers["anthropic"] as Record<string, unknown>;
 	assert.equal("oauth" in reg, false, "the pool must not offer an auth method it never uses");
-	assert.equal(reg.api, "anthropic-messages", "the registration declares its api for the composer gate");
 	assert.equal(typeof reg.streamSimple, "function", "…and registers its own stream handler");
 }
 resetPoolStateForTesting();

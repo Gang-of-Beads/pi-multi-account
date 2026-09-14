@@ -546,24 +546,11 @@ export function createPoolRuntime(
 			// to `/accounts`, which is where account management belongs once this
 			// extension is installed.
 			//
-			// STRING-form registration, deliberately: pi-web 1.202609.18's
-			// composer resolves `extension` only from config-form registrations,
-			// and gates the extension stream on `model.api === extension.api`. The
-			// object-form registration lands in a different map that the gate
-			// never sees, so every request silently bypassed the pool - no
-			// failover, no rotation, no pool logs. `apiKey` is a placeholder to
-			// satisfy auth validation: the pool's stream resolves its own account
-			// credential and never reads the provider-level key.
+			// Object-form registration only. (v0.8.5/0.8.6 briefly added a
+			// string-form registration on top for pi-web's composer gate; it was
+			// rolled back - the real failure was unrelated, and the extra
+			// registration churn only fed the multi-runtime provider races.)
 			pi.unregisterProvider(NATIVE_POOL_NAME);
-			pi.registerProvider(NATIVE_POOL_NAME, {
-				name: `pool: ${definition.name}`,
-				api: "anthropic-messages",
-				apiKey: "managed-by-pi-multi-account",
-				streamSimple: stream("streamSimple"),
-			} as never);
-			// Object-form on top: it becomes the composer's `base`, so both the
-			// legacy registry (CLI) and the new composer route to the pool's own
-			// stream/streamSimple.
 			pi.registerProvider({
 				...(native as Provider),
 				auth: { apiKey: poolApiKeyAuth(definition) },
@@ -578,17 +565,6 @@ export function createPoolRuntime(
 				baseUrl: "https://api.anthropic.com",
 			}));
 			pi.unregisterProvider(definition.name);
-			pi.registerProvider(definition.name, {
-				name: `pool: ${definition.name}`,
-				api: "anthropic-messages",
-				baseUrl: "https://api.anthropic.com",
-				apiKey: "managed-by-pi-multi-account",
-				headers: { "user-agent": buildUserAgent() },
-				models: aliasModels as never,
-				streamSimple: stream("streamSimple"),
-			});
-			// Object-form marker: makes the pool the composer's `base` (see the
-			// native-override comment).
 			pi.registerProvider({
 				id: definition.name,
 				name: definition.name,
