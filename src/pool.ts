@@ -38,7 +38,7 @@
  *   PI_MULTI_ACCOUNT_POOLS_FILE=...  move the pool definitions file
  */
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import type { OAuthCredential } from "@earendil-works/pi-ai";
+import type { OAuthCredential, Provider } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import {
@@ -489,6 +489,32 @@ export function createPoolRuntime(
 
 
 
+	/** Credential resolution for a custom-named pool provider. */
+	const poolApiKeyAuth = (definition: PoolDefinition) => ({
+		name: `${definition.name} pool account`,
+		async check({ signal }: { signal: AbortSignal }) {
+			signal.throwIfAborted();
+			const state = await store.readProviderAsync("anthropic");
+			return expandPoolAccounts(definition, Object.keys(state.accounts), state.active).length > 0
+				? { type: "api_key" as const, source: `pi-accounts:${definition.name}` }
+				: undefined;
+		},
+		async resolve({ signal }: { signal: AbortSignal }) {
+			signal.throwIfAborted();
+			// The stream wrapper picks the account per request; this resolution
+			// only tells pi the provider is configured, and hands the turn the
+			// first pick for anything that inspects the key before streaming.
+			const state = await store.readProviderAsync("anthropic");
+			const accounts = expandPoolAccounts(definition, Object.keys(state.accounts), state.active);
+			for (const accountName of accounts) {
+				const credential = await resolveAccount(accountName, signal, definition.name);
+				if (credential) return { auth: { apiKey: credential.access }, source: `pi-accounts:${accountName}` };
+			}
+			logError("pool.unresolved", { pool: definition.name, reason: "no usable account credential" });
+			return undefined;
+		},
+	});
+
 	const registerProviderFor = (definition: PoolDefinition, models: ProviderModel[]): void => {
 		const isNativeOverride = definition.name === NATIVE_POOL_NAME;
 		const stream = (kind: StreamKind) => (model: unknown, context: unknown, opts: unknown) =>
@@ -534,7 +560,16 @@ export function createPoolRuntime(
 				api: "anthropic-messages",
 				apiKey: "managed-by-pi-multi-account",
 				streamSimple: stream("streamSimple"),
-			});
+			} as never);
+			// Object-form on top: it becomes the composer's `base`, so both the
+			// legacy registry (CLI) and the new composer route to the pool's own
+			// stream/streamSimple.
+			pi.registerProvider({
+				...(native as Provider),
+				auth: { apiKey: poolApiKeyAuth(definition) },
+				stream: stream("stream"),
+				streamSimple: stream("streamSimple"),
+			} as Provider);
 		} else {
 			const aliasModels = models.map((model) => ({
 				...model,
@@ -545,7 +580,6 @@ export function createPoolRuntime(
 			pi.unregisterProvider(definition.name);
 			pi.registerProvider(definition.name, {
 				name: `pool: ${definition.name}`,
-				// Same string-form reasoning as the native override above.
 				api: "anthropic-messages",
 				baseUrl: "https://api.anthropic.com",
 				apiKey: "managed-by-pi-multi-account",
@@ -553,6 +587,18 @@ export function createPoolRuntime(
 				models: aliasModels as never,
 				streamSimple: stream("streamSimple"),
 			});
+			// Object-form marker: makes the pool the composer's `base` (see the
+			// native-override comment).
+			pi.registerProvider({
+				id: definition.name,
+				name: definition.name,
+				baseUrl: "https://api.anthropic.com",
+				headers: { "user-agent": buildUserAgent() },
+				auth: { apiKey: poolApiKeyAuth(definition) },
+				getModels: () => aliasModels,
+				stream: stream("stream"),
+				streamSimple: stream("streamSimple"),
+			} as Provider);
 		}
 		poolProviderNames.add(definition.name);
 		logInfo("pool.registered", { name: definition.name, accounts: definition.accounts, nativeOverride: isNativeOverride });
