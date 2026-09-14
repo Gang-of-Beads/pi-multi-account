@@ -94,6 +94,15 @@ export function installAbortDiagnostics(): void {
 
 	const originalAbort = AbortController.prototype.abort;
 	AbortController.prototype.abort = function (this: AbortController, reason?: unknown): AbortSignal {
+		// Log every abort with its caller: the failing turn's signal arrives at
+		// prepareRequest already aborted by an anonymous abort(), and only a
+		// stack at the abort call itself can name it.
+		if (!this.signal.aborted) {
+			logInfo("diag.abort_any", {
+				stack: (new Error().stack ?? "").split("\n").slice(1, 11).join(" | ").slice(0, 800),
+				reason: reason === undefined ? "(none)" : String(reason).slice(0, 100),
+			});
+		}
 		const meta = inFlight.get(this.signal);
 		if (meta) {
 			logInfo("diag.abort_called", {
