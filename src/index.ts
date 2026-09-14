@@ -48,6 +48,7 @@ import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerBillingLayer } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
+import { installAbortDiagnostics } from "./abort-diagnostics.ts";
 import { errorMessage } from "./errors.ts";
 import { parseNameList } from "./names.ts";
 import {
@@ -100,6 +101,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// wrote the lines that follow — the host or a container sharing this home
 	// directory — which is the difference between "my token expired" and "another
 	// installation rotated my token away".
+	installAbortDiagnostics();
+
 	logInfo("extension.loaded", {
 		cwd: process.cwd(),
 		home: process.env.HOME,
