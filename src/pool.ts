@@ -370,6 +370,11 @@ export function createPoolRuntime(
 			}
 
 			let lastFailure: AssistantMessageEvent | undefined;
+			// What the loop tried and what each account answered. This is the only
+			// place this context exists: the surfaced error is a bare provider
+			// message like `503 {"message":"Upstream timeout"}`, which cannot
+			// answer "which account, why" without it.
+			const tried: Array<{ account: string; status: number | undefined; detail: string }> = [];
 			for (let index = 0; index < accounts.length; index += 1) {
 				const accountName = accounts[index]!;
 				if (signal?.aborted) break;
@@ -412,10 +417,14 @@ export function createPoolRuntime(
 				const errorBody = (failure as { error?: { errorMessage?: string } }).error;
 				const errorStatus = capturedStatus ?? statusFromMessage(errorBody?.errorMessage ?? "");
 				const failureMessage = errorBody?.errorMessage ?? "";
+				tried.push({ account: accountName, status: errorStatus, detail: failureMessage });
 				const aborted = signal?.aborted === true || (failure as { reason?: string }).reason === "aborted";
 				const eligible = !aborted && !sawContent && isFailoverEligible(errorStatus);
 				if (!eligible) {
-					outer.push(failure);
+					// Non-failover errors are pushed verbatim elsewhere, but the
+					// account attribution must still reach the user: a bare 400 or
+					// 503 says nothing about which credential produced it.
+					outer.push(errorEvent(`${failureMessage}\n\npi-multi-account: pool "${definition.name}", account "${accountName}".`));
 					outer.end();
 					return;
 				}
@@ -456,11 +465,22 @@ export function createPoolRuntime(
 				outer.end();
 				return;
 			}
+			if (lastFailure) {
+				// Append the per-account breakdown: the raw provider error alone
+				// ("503 Upstream timeout") cannot show whether one account or the
+				// whole pool is down, which is the first question anyone asks.
+				const trace = tried
+					.map((t) => `"${t.account}" → ${t.status ?? "error"}${t.detail ? `: ${t.detail.slice(0, 120)}` : ""}`)
+					.join("; ");
+				const body = (lastFailure as { error?: { errorMessage?: string } }).error?.errorMessage ?? "";
+				outer.push(errorEvent(`${body}\n\npi-multi-account: pool "${definition.name}" tried ${tried.length} account(s): ${trace}.`));
+				outer.end();
+				return;
+			}
 			outer.push(
-				lastFailure ??
-					errorEvent(
-						`pi-multi-account: every account in pool "${definition.name}" failed to resolve a credential. Check /accounts.`,
-					),
+				errorEvent(
+					`pi-multi-account: every account in pool "${definition.name}" failed to resolve a credential. Check /accounts.`,
+				),
 			);
 			outer.end();
 		})();

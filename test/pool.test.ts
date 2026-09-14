@@ -357,6 +357,30 @@ resetPoolStateForTesting();
 resetPoolsFileForTesting();
 
 {
+	// When every account fails, the surfaced error must carry the per-account
+	// trace. A bare provider message ("503 Upstream timeout") cannot answer
+	// "which account, why" — the first question anyone asks when a pool dies.
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([{ status: 503 }, { status: 503 }]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
+	const registered = providers["team"]!;
+
+	const { events } = await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const errorEvent = events.find((event) => event.type === "error") as { error?: { errorMessage?: string } } | undefined;
+	assert.ok(errorEvent, "an exhausted pool surfaces an error");
+	const message = errorEvent.error?.errorMessage ?? "";
+	assert.match(message, /503/, "the provider's own error stays visible");
+	assert.match(message, /pool "team" tried 2 account/, "with the account attribution added");
+	assert.match(message, /"personal" → 503/, "first account's failure recorded");
+	assert.match(message, /"work" → 503/, "last account's failure recorded");
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+{
 	// The pool only tries its own accounts, in definition order — an "all"
 	// pool follows the store with the active account leading.
 	const store = await makeStore("personal", ["personal", "work", "spare"]);

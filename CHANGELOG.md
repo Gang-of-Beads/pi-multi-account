@@ -308,3 +308,6 @@ Fixes a regression introduced by the 0.4.2 background refresh.
 ## 0.8.3
 
 - Resolve the wire client version dynamically: ANTHROPIC_CLI_VERSION env override, then a locally installed `claude --version`, then the pinned fallback (now 2.1.251). The gateway enforces a per-model minimum client version and rejected fable-5-1 from 2.1.217 with claude_code_version_too_old.
+## 0.8.4
+
+- Attribute pool errors: an exhausted pool now surfaces which accounts were tried and each one's status/detail (e.g. 'pool "team" tried 2 account(s): "personal" → 503; "work" → 503'), and a non-failover error names the account that produced it. The bare provider message alone could not answer which account, why.
