@@ -314,3 +314,6 @@ Fixes a regression introduced by the 0.4.2 background refresh.
 ## 0.8.5
 
 - Fix pools being silently bypassed under pi-web 1.202609.18: the new provider composer only routes a model to an extension's stream when `model.api === extension.api`, and the registration carried no top-level `api` (the built-in provider object has none). Every request took the built-in stream instead — no failover, no rotation, no pool logs, and under pi-web the turn hung until the client aborted it. Both the native-override pool and alias registrations now declare `api: "anthropic-messages"`.
+## 0.8.6
+
+- Register pools via string-form registerProvider. pi-web 1.202609.18 resolves the composer's extension layer only from config-form registrations; the object form landed in a map the extension stream gate never reads, so every request bypassed the pool (no failover, no rotation, no pool logs) and hung until the client aborted the turn.

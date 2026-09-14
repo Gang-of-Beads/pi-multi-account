@@ -315,11 +315,10 @@ resetPoolsFileForTesting();
 
 	const registered = providers["team"]!;
 	assert.ok(registered, "the pool registers a provider under the user's name");
-	assert.equal(typeof registered.stream, "function", "with a stream override");
-	assert.equal(typeof registered.streamSimple, "function", "…and streamSimple");
+	assert.equal(typeof registered.streamSimple, "function", "with a streamSimple override (string-form registration)");
 	assert.equal(isPoolProvider("team"), true, "the pool provider id is discoverable");
 
-	const { events, result } = await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const { events, result } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	const done = events.at(-1) as { type: string; message?: { content: Array<{ text?: string }> } };
 	assert.equal(done.type, "done");
 	assert.equal(done.message?.content[0]?.text, "hello from work");
@@ -341,7 +340,7 @@ resetPoolsFileForTesting();
 	assert.equal(poolFirstPick("team", await store.readProviderAsync("anthropic")), "work", "rotation now starts at work");
 
 	// The next request starts there instead of retrying the failed account.
-	await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.equal(fake.requests[0]?.apiKey, "access-personal", "the first attempt used the first pool account");
 	assert.equal(fake.requests[1]?.apiKey, "access-work", "failover used the second pool account");
 	assert.equal(fake.requests[2]?.apiKey, "access-work", "the next request starts with the account that worked");
@@ -367,7 +366,7 @@ resetPoolsFileForTesting();
 	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
 	const registered = providers["team"]!;
 
-	const { events } = await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	const errorEvent = events.find((event) => event.type === "error") as { error?: { errorMessage?: string } } | undefined;
 	assert.ok(errorEvent, "an exhausted pool surfaces an error");
 	const message = errorEvent.error?.errorMessage ?? "";
@@ -389,13 +388,13 @@ resetPoolsFileForTesting();
 	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
 	runtime.registerPool({ name: "only-work", accounts: ["work", "personal"] });
 	const registered = providers["only-work"]!;
-	await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.equal(fake.requests[0]?.apiKey, "access-work", "an explicit list keeps its order, whatever the active account");
 	assert.equal(fake.requests.length, 1, "success on the first pick ends the request");
 
 	runtime.registerPool({ name: "everything", accounts: "all" });
 	const everything = providers["everything"]!;
-	await collect((everything.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	await collect((everything.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.equal(fake.requests[1]?.apiKey, "access-personal", "an all-pool starts with the stored active account");
 }
 resetPoolStateForTesting();
@@ -425,7 +424,7 @@ resetPoolsFileForTesting();
 	runtime.registerPool({ name: "team", accounts: "all" });
 	const registered = providers["team"]!;
 
-	const { events } = await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	const error = events.at(-1) as { type: string; error: { errorMessage: string } };
 	assert.equal(error.type, "error");
 	assert.match(error.error.errorMessage, /^429 /, "the last provider error is forwarded");
@@ -442,7 +441,7 @@ resetPoolsFileForTesting();
 	const runtime2 = createPoolRuntime(pi2, store, { baseProvider: secondFake, refreshAdapter: adapter });
 	runtime2.registerPool({ name: "team", accounts: "all" });
 	const registered2 = providers2["team"]!;
-	const { result } = await collect((registered2.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: secondFake.fetch }));
+	const { result } = await collect((registered2.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: secondFake.fetch }));
 	assert.equal((result as { content: Array<{ text?: string }> }).content[0]?.text, "recovered");
 	assert.deepEqual(refreshCalls, ["access-personal"], "the suspect credential was refreshed before use");
 	assert.equal(lastPoolAccount(), "personal", "the refreshed account served the request");
@@ -461,7 +460,7 @@ resetPoolsFileForTesting();
 	runtime.registerPool({ name: "team", accounts: "all" });
 	const registered = providers["team"]!;
 
-	const { events } = await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.deepEqual(events.map((event) => event.type), ["start", "text_start", "error"]);
 	assert.equal(fake.requests.length, 1, "no second attempt after content was forwarded");
 	assert.deepEqual(drainPoolNotices(), [], "no failover happened, so nothing is queued");
@@ -477,7 +476,7 @@ resetPoolsFileForTesting();
 	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
 	runtime.registerPool({ name: "team", accounts: "all" });
 	const registered = providers["team"]!;
-	const { events } = await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.equal(fake.requests.length, 1, "a bad request is not retried on another account");
 	assert.equal((events.at(-1) as { type: string }).type, "error");
 }
@@ -513,9 +512,13 @@ resetPoolsFileForTesting();
 	const { pi, providers } = stubPi();
 	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
 	runtime.registerPool({ name: NATIVE_POOL_NAME, accounts: "all" });
-	const auth = (providers["anthropic"] as { auth?: Record<string, unknown> }).auth ?? {};
-	assert.equal("oauth" in auth, false, "the pool must not offer an auth method it never uses");
-	assert.equal(typeof auth.apiKey, "object", "…and must offer its own api-key resolution instead");
+	// String-form registration: the config carries a placeholder apiKey (the
+	// pool's stream resolves its own account credential) and declares `api`,
+	// which is what pi-web's composer gates the extension stream on.
+	const reg = providers["anthropic"] as Record<string, unknown>;
+	assert.equal("oauth" in reg, false, "the pool must not offer an auth method it never uses");
+	assert.equal(reg.api, "anthropic-messages", "the registration declares its api for the composer gate");
+	assert.equal(typeof reg.streamSimple, "function", "…and registers its own stream handler");
 }
 resetPoolStateForTesting();
 resetPoolsFileForTesting();
@@ -529,8 +532,8 @@ resetPoolsFileForTesting();
 	runtime.registerPool({ name: NATIVE_POOL_NAME, accounts: "all" });
 	const registered = providers["anthropic"]!;
 	assert.ok(registered, "the native id is taken over by the pool");
-	assert.equal(typeof registered.stream, "function");
-	await collect((registered.stream as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	assert.equal(typeof registered.streamSimple, "function");
+	await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
 	assert.equal(fake.requests[0]?.apiKey, "access-personal");
 	assert.equal(lastPoolAccount(), "personal");
 }
