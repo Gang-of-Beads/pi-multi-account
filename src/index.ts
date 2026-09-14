@@ -282,7 +282,71 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 	// Per-session startup: finish a deferred import, sync aliases, re-pin the
 	// session's account, then report it in the footer.
+	// Forensics at the death point: pi's own prepareRequest (getAuth → stream).
+	// Wrapped once per runtime instance; logs entry, getAuth outcome, and throw.
 	pi.on("session_start", async (_event, ctx) => {
+		try {
+			const rt = ctx.modelRegistry as unknown as {
+				__pmaPrepareWrapped?: boolean;
+				prepareRequest?: (model: { provider: string; id: string }, options?: { signal?: AbortSignal }) => Promise<unknown>;
+				getAuth?: (...args: unknown[]) => Promise<unknown>;
+			};
+			const target = (rt as { runtime?: typeof rt }).runtime ?? rt;
+			if (target && !target.__pmaPrepareWrapped && typeof target.prepareRequest === "function") {
+				target.__pmaPrepareWrapped = true;
+				const origPrepare = target.prepareRequest;
+				const origGetAuth = target.getAuth;
+				const sigInfo = (s?: AbortSignal) => ({
+					hasSignal: s !== undefined,
+					aborted: s?.aborted ?? null,
+					reason: s?.aborted ? String((s.reason as { message?: string })?.message ?? s.reason).slice(0, 120) : undefined,
+				});
+				if (typeof origGetAuth === "function") {
+					target.getAuth = async function (this: unknown, ...args: unknown[]) {
+						const t0 = Date.now();
+						const arg0 = args[0] as { provider?: string } | string;
+						const providerId = typeof arg0 === "string" ? arg0 : arg0?.provider;
+						const sig = (args[1] as { signal?: AbortSignal } | undefined)?.signal;
+						try {
+							const r = await origGetAuth.apply(this, args);
+							logInfo("diag.rt_getAuth", { provider: providerId, ok: r !== undefined, elapsedMs: Date.now() - t0, ...sigInfo(sig) });
+							return r;
+						} catch (error) {
+							logError("diag.rt_getAuth_threw", { provider: providerId, elapsedMs: Date.now() - t0, detail: errorMessage(error), ...sigInfo(sig) });
+							throw error;
+						}
+					};
+				}
+				target.prepareRequest = async function (this: unknown, model, options) {
+					const t0 = Date.now();
+					const sig = options?.signal;
+					logInfo("diag.rt_prepare_entered", { provider: model?.provider, model: model?.id, ...sigInfo(sig) });
+					if (sig && !sig.aborted) {
+						sig.addEventListener("abort", () => {
+							logInfo("diag.rt_turn_signal_aborted", {
+								provider: model?.provider,
+								elapsedMs: Date.now() - t0,
+								reason: String((sig.reason as { message?: string })?.message ?? sig.reason).slice(0, 120),
+								stack: (new Error().stack ?? "").split("\n").slice(1, 10).join(" | ").slice(0, 700),
+							});
+						}, { once: true });
+					}
+					try {
+						const r = await origPrepare.call(this, model, options);
+						logInfo("diag.rt_prepare_ok", { provider: model?.provider, elapsedMs: Date.now() - t0 });
+						return r;
+					} catch (error) {
+						logError("diag.rt_prepare_threw", { provider: model?.provider, elapsedMs: Date.now() - t0, detail: errorMessage(error), ...sigInfo(sig) });
+						throw error;
+					}
+				};
+				logInfo("diag.rt_prepare_wrapped", { viaRuntimeField: (rt as { runtime?: unknown }).runtime !== undefined });
+			} else {
+				logInfo("diag.rt_prepare_not_wrapped", { hasPrepare: typeof target?.prepareRequest, keys: Object.getOwnPropertyNames(Object.getPrototypeOf(rt ?? {})).slice(0, 25) });
+			}
+		} catch (error) {
+			logError("diag.rt_prepare_wrap_failed", { detail: errorMessage(error) });
+		}
 		if (pendingImport.length > 0) {
 			const detected = pendingImport;
 			pendingImport = [];
