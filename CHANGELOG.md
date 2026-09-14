@@ -317,3 +317,6 @@ Fixes a regression introduced by the 0.4.2 background refresh.
 ## 0.8.6
 
 - Register pools via string-form registerProvider. pi-web 1.202609.18 resolves the composer's extension layer only from config-form registrations; the object form landed in a map the extension stream gate never reads, so every request bypassed the pool (no failover, no rotation, no pool logs) and hung until the client aborted the turn.
+## 0.8.6
+
+- Dual-form pool registration: pi-web 1.202609.18's composer uses object-form registrations as its composition base and only routes through them when a string-form registration marks the provider id as extension-composed. Registering both forms restores the pool under the new composer while keeping the legacy CLI path unchanged.
