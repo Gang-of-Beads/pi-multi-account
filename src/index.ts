@@ -321,6 +321,44 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} catch (error) {
 			logError("turn.store_read_failed", { detail: errorMessage(error) });
 		}
+		// Forensics: what pi itself sees for this turn's provider, in this
+		// session's runtime, right before it resolves auth and calls stream.
+		try {
+			const providerId = ctx.model?.provider;
+			if (providerId) {
+				const reg = ctx.modelRegistry;
+				const provider = reg.getProvider(providerId);
+				const native = reg.getRegisteredNativeProvider(providerId);
+				const config = reg.getRegisteredProviderConfig(providerId);
+				let authResult: unknown;
+				let authError: string | undefined;
+				try {
+					const a = await reg.getProviderAuth(providerId);
+					authResult = a ? { type: (a as { type?: string }).type, source: (a as { source?: string }).source, hasKey: Boolean((a as { auth?: { apiKey?: string } }).auth?.apiKey) } : null;
+				} catch (error) {
+					authError = errorMessage(error);
+				}
+				logInfo("diag.turn_provider_view", {
+					provider: providerId,
+					model: ctx.model?.id,
+					modelFound: reg.find(providerId, ctx.model?.id ?? "") !== undefined,
+					hasConfiguredAuth: ctx.model ? reg.hasConfiguredAuth(ctx.model) : null,
+					authStatus: reg.getProviderAuthStatus(providerId),
+					providerName: provider?.name,
+					providerAuthKeys: provider ? Object.keys((provider as { auth?: object }).auth ?? {}) : null,
+					providerHasStream: typeof (provider as { stream?: unknown })?.stream === "function",
+					providerHasStreamSimple: typeof (provider as { streamSimple?: unknown })?.streamSimple === "function",
+					nativeRegistered: native !== undefined,
+					nativeName: native?.name,
+					configRegistered: config !== undefined,
+					configKeys: config ? Object.keys(config) : null,
+					authResult,
+					authError,
+				});
+			}
+		} catch (error) {
+			logError("diag.turn_provider_view_failed", { detail: errorMessage(error) });
+		}
 		await updateBillingStatus(store, ctx);
 		reportForeignStoreChanges(ctx);
 		return undefined;
