@@ -52,6 +52,7 @@ export function installAbortDiagnostics(): void {
 		const initiator = frames(new Error().stack ?? "", 6);
 		const startedAt = Date.now();
 		inFlight.set(signal, { url, initiator, startedAt });
+		logInfo("diag.fetch_started", { url: url.slice(0, 80), initiatedBy: frames(initiator, 3) });
 		signal.addEventListener(
 			"abort",
 			() => {
@@ -59,9 +60,15 @@ export function installAbortDiagnostics(): void {
 				// aborter's stack (if instrumented) is logged separately by the
 				// AbortController patch, keyed on the same signal.
 				const meta = inFlight.get(signal);
+				// signal.reason names the killer natively: undici timeouts carry
+				// TimeoutError (headers/body), client aborts carry the caller's
+				// reason, and a plain AbortError means an external signal.
+				const reason = signal.reason;
 				logInfo("diag.fetch_aborted", {
 					url: url.slice(0, 80),
 					elapsedMs: Date.now() - startedAt,
+					reasonName: reason instanceof Error ? reason.name : typeof reason,
+					reasonMessage: String(reason instanceof Error ? reason.message : reason ?? "").slice(0, 120),
 					initiatedBy: frames(meta?.initiator ?? initiator, 4),
 				});
 			},

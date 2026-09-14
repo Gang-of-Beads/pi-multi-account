@@ -323,3 +323,6 @@ Fixes a regression introduced by the 0.4.2 background refresh.
 ## 0.8.7
 
 - Abort forensics: wraps global fetch and AbortController.abort so that when an Anthropic request dies with an undici AbortError ("This operation was aborted"), the log records the request's initiator stack, the aborter's call stack, and the abort reason. Pure instrumentation; no behavior change.
+## 0.8.8
+
+- Fetch-start diagnostics: every Anthropic request logs its initiation (with initiator stack), and aborts now record the native signal reason (TimeoutError vs client abort), so a silent turn failure identifies both the request and what killed it.
