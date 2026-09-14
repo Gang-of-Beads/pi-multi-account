@@ -517,8 +517,13 @@ export function createPoolRuntime(
 
 	const registerProviderFor = (definition: PoolDefinition, models: ProviderModel[]): void => {
 		const isNativeOverride = definition.name === NATIVE_POOL_NAME;
-		const stream = (kind: StreamKind) => (model: unknown, context: unknown, opts: unknown) =>
-			runPool(definition, kind, model as ProviderModel, context as never, (opts ?? {}) as Record<string, unknown>);
+		const stream = (kind: StreamKind) => (model: unknown, context: unknown, opts: unknown) => {
+			// Forensics: proves whether the composer actually routed the turn to
+			// the pool. Its absence in a failing turn is the binary answer to
+			// "was the pool even in the loop".
+			logInfo("diag.pool_stream_entered", { pool: definition.name, kind, model: (model as ProviderModel)?.id });
+			return runPool(definition, kind, model as ProviderModel, context as never, (opts ?? {}) as Record<string, unknown>);
+		};
 		if (isNativeOverride) {
 			// The user explicitly chose the native id: inherit everything,
 			// replace only the request entry points — except the OAuth auth
