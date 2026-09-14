@@ -99,7 +99,7 @@ export function installAbortDiagnostics(): void {
 		// stack at the abort call itself can name it.
 		if (!this.signal.aborted) {
 			logInfo("diag.abort_any", {
-				stack: (new Error().stack ?? "").split("\n").slice(1, 11).join(" | ").slice(0, 800),
+				stack: (new Error().stack ?? "").split("\n").slice(1, 20).map((f) => f.trim().replace(/^at /, "").replace(/file:\/\/\/nix\/store\/[^/]+\//, "").replace(/\/Users\/hanxiao\.du\/\.pi\/agent\/git\/github\.com\//, "")).join(" | ").slice(0, 3000),
 				reason: reason === undefined ? "(none)" : String(reason).slice(0, 100),
 			});
 		}
