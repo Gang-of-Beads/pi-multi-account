@@ -25,9 +25,19 @@ interface InFlight {
 	startedAt: number;
 }
 
-let installed = false;
+// Singleton across every plugin instance in the process: pi-web loads the
+// extension once per runtime (global bootstrap + each session), and stacked
+// wrappers both double-log every request and break the abort attribution -
+// instance A registers the in-flight signal in its own map, so instance B's
+// AbortController patch finds nothing. One wrapper, one shared map.
+const GLOBAL_KEY = "__piMultiAccountAbortDiag" as const;
+const globalState = (globalThis as Record<string, unknown>)[GLOBAL_KEY] as
+	| { installed: boolean; inFlight: Map<AbortSignal, InFlight> }
+	| undefined;
+const state = globalState ?? { installed: false, inFlight: new Map<AbortSignal, InFlight>() };
+(globalThis as Record<string, unknown>)[GLOBAL_KEY] = state;
 
-const inFlight = new Map<AbortSignal, InFlight>();
+const inFlight = state.inFlight;
 
 function frames(stack: string, count: number): string {
 	return stack
@@ -39,8 +49,8 @@ function frames(stack: string, count: number): string {
 }
 
 export function installAbortDiagnostics(): void {
-	if (installed) return;
-	installed = true;
+	if (state.installed) return;
+	state.installed = true;
 
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = ((async (input: RequestInfo | URL, init?: RequestInit) => {
