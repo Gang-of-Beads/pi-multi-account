@@ -547,6 +547,12 @@ export function createPoolRuntime(
 			pi.unregisterProvider(NATIVE_POOL_NAME);
 			pi.registerProvider({
 				...(native as Provider),
+				// Load-bearing: pi-web's composer routes a model to the extension's
+				// streamSimple only when `model.api === extension.api`, and the
+				// built-in provider object carries no top-level `api`. Without it
+				// every request silently bypasses the pool and takes the built-in
+				// stream: no failover, no rotation, no pool logs.
+				api: "anthropic-messages",
 				auth: { ...inheritedAuth, apiKey: poolApiKeyAuth(definition) },
 				stream: stream("stream"),
 				streamSimple: stream("streamSimple"),
@@ -562,6 +568,9 @@ export function createPoolRuntime(
 			pi.registerProvider({
 				id: definition.name,
 				name: definition.name,
+				// Same load-bearing `api` as the native override above: without it
+				// the composer's api gate silently routes around the pool.
+				api: "anthropic-messages",
 				baseUrl: "https://api.anthropic.com",
 				headers: { "user-agent": buildUserAgent() },
 				auth: { apiKey: poolApiKeyAuth(definition) },
