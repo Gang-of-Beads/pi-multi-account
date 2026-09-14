@@ -42,7 +42,7 @@
  *     (disable with PI_MULTI_ACCOUNT_ALIASES=0).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import accountsExtension, { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
+import { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
@@ -257,10 +257,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	});
 
-	// pi-accounts: store, runtime auth switching, /accounts baseline.
-	// `providers` are the patched adapters (see adapters.ts) so pi-accounts' own
-	// refresh calls cannot fail-close the provider on Node 24.
-	accountsExtension(pi, { store, providers: [...providers] });
+	// pi-accounts' extension is deliberately NOT registered: its runtime
+	// credential injection for `anthropic` is silently dropped by pi-web's
+	// frozen global provider policy, its read-back check then fails closed,
+	// and `turn_start` aborts the turn before any request (the 2026-09-15
+	// outage). The pool resolves credentials per request and answers pi's
+	// configured-check via its own auth.apiKey, so the injection is redundant.
+	// The store stays (library import above); /accounts is overridden by
+	// registerAccountsCommandOverride. Re-add only if a non-anthropic
+	// pi-accounts provider is ever needed.
 
 	// Claude subscription billing (billing.ts).
 	registerBillingLayer(pi);
