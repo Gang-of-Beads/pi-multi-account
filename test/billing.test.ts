@@ -127,6 +127,15 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	rmSync(join(fakeBin, "claude"));
 	assert.equal(getCliVersion(), "2.3.4", "the probe result is memoized");
 
+	// An outdated local claude must not lower the claimed version: the gateway
+	// enforces a per-model minimum (claude_code_version_too_old).
+	writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\necho \"2.1.217 (Claude Code)\"\n", {
+		mode: 0o755,
+	});
+	resetClaudeVersionCache();
+	assert.equal(getCliVersion(), CC_VERSION, "an older local claude does not downgrade the pin");
+	rmSync(join(fakeBin, "claude"));
+
 	// Env override beats everything.
 	process.env.ANTHROPIC_CLI_VERSION = "9.9.9";
 	resetClaudeVersionCache();

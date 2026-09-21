@@ -18,7 +18,7 @@ A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription bil
 Install as a pi package so pi can manage updates:
 
 ```bash
-pi install git:git@github.com:Gang-of-Beads/pi-multi-account.git@v0.8.2
+pi install git:https://github.com/Gang-of-Beads/pi-multi-account.git
 # or
 pi install /absolute/path/to/pi-multi-account
 ```
@@ -78,7 +78,7 @@ Imported credentials are read-only: this package never writes into Claude Code's
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
 | `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | JSONL diagnostics file |
-| `ANTHROPIC_CLI_VERSION` | `2.1.217` | Billing-header and user-agent version override |
+| `ANTHROPIC_CLI_VERSION` | newer of a local `claude --version` and the pinned `2.1.251` | Billing-header and user-agent version override; a local install older than the pin is ignored, because the gateway enforces a per-model minimum (`claude_code_version_too_old`) |
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | User-agent entrypoint override |
 | `ANTHROPIC_USER_AGENT` | generated | Complete user-agent override |
 

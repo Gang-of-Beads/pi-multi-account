@@ -69,12 +69,34 @@ export function resetClaudeVersionCache(): void {
 	detectedClaudeVersion = null;
 }
 
+/** Compare dotted numeric version prefixes; pre-release suffixes are ignored. */
+function compareVersions(a: string, b: string): number {
+	const parts = (value: string): number[] =>
+		(/^\d+(?:\.\d+)*/.exec(value)?.[0] ?? "").split(".").map((part) => Number(part) || 0);
+	const left = parts(a);
+	const right = parts(b);
+	for (let i = 0; i < Math.max(left.length, right.length); i++) {
+		const diff = (left[i] ?? 0) - (right[i] ?? 0);
+		if (diff !== 0) return diff < 0 ? -1 : 1;
+	}
+	return 0;
+}
+
 /**
- * Resolve the Claude Code CLI version. Env override wins, then a locally
- * installed claude, then the pinned fallback.
+ * Resolve the Claude Code CLI version. Env override wins (the user may need an
+ * exact string), then the newer of a locally installed claude and the pinned
+ * minimum.
+ *
+ * The detected version must never *lower* the claimed version: the gateway
+ * enforces a per-model minimum, so a machine with an outdated claude on PATH
+ * would otherwise fail every request on a newer model with
+ * `claude_code_version_too_old` — a local install older than the pin is exactly
+ * the case where the pin is the better claim.
  */
 export function getCliVersion(): string {
-	return process.env.ANTHROPIC_CLI_VERSION ?? detectClaudeVersion() ?? CC_VERSION;
+	if (process.env.ANTHROPIC_CLI_VERSION) return process.env.ANTHROPIC_CLI_VERSION;
+	const detected = detectClaudeVersion();
+	return detected && compareVersions(detected, CC_VERSION) > 0 ? detected : CC_VERSION;
 }
 
 /** Resolve the billing entrypoint (env override wins). */
