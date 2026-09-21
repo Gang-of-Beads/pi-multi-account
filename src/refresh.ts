@@ -384,6 +384,19 @@ export function accountsNeedingRelogin(providerId: string, accountNames: Iterabl
  * the provider has already rejected: a revoked token dies before its stored
  * expiry, so waiting for that expiry would keep every request failing.
  */
+/**
+ * One refresh per account at a time, per process.
+ *
+ * pi-web hosts many sessions - and every subagent - in one daemon, so a
+ * rotation could send a dozen turns at the same credential at once. Each one
+ * took the account store's file lock, and the eleventh waiter exhausted
+ * proper-lockfile's retries: the turn died with "Lock file is already being
+ * held" and the reader saw an auth failure for a credential that was perfectly
+ * fine. Callers now share the in-flight refresh, so the lock sees one writer
+ * instead of a crowd.
+ */
+const inFlightRefreshes = new Map<string, Promise<OAuthCredential>>();
+
 export async function refreshAccountCredential(
 	store: AccountStore,
 	provider: AccountProviderAdapter,
@@ -392,8 +405,40 @@ export async function refreshAccountCredential(
 	now = Date.now(),
 	options: { force?: boolean } = {},
 ): Promise<OAuthCredential> {
+	const key = `${provider.id}\u0000${accountName}\u0000${options.force === true ? "force" : "due"}`;
+	const running = inFlightRefreshes.get(key);
+	if (running !== undefined) return running;
+	const attempt = refreshAccountCredentialOnce(store, provider, accountName, credential, now, options)
+		.finally(() => { inFlightRefreshes.delete(key); });
+	inFlightRefreshes.set(key, attempt);
+	return attempt;
+}
+
+/**
+ * A held lock is not a bad credential.
+ *
+ * When the store cannot be written because someone else is writing it, the
+ * honest answer is the credential the store holds now - another writer was
+ * refreshing the same account - not a failed turn. Only a store that still
+ * offers an unusable credential is a real failure.
+ */
+function isLockContention(error: unknown): boolean {
+	const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
+	if (code === "ELOCKED") return true;
+	const message = error instanceof Error ? error.message : "";
+	return message.includes("Lock file is already being held");
+}
+
+async function refreshAccountCredentialOnce(
+	store: AccountStore,
+	provider: AccountProviderAdapter,
+	accountName: string,
+	credential: OAuthCredential,
+	now: number,
+	options: { force?: boolean },
+): Promise<OAuthCredential> {
 	let refreshed = credential;
-	await store.updateProviderAsync(provider.id, async (state) => {
+	const mutate = async (state: Parameters<Parameters<AccountStore["updateProviderAsync"]>[1]>[0]) => {
 		const latest = state.accounts[accountName];
 		if (!latest || latest.type !== "oauth") {
 			throw new Error(`Account "${accountName}" was removed while refreshing.`);
@@ -434,6 +479,19 @@ export async function refreshAccountCredential(
 			...state,
 			accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
 		};
-	});
+	};
+	try {
+		await store.updateProviderAsync(provider.id, mutate);
+	} catch (error) {
+		if (!isLockContention(error)) throw error;
+		const stored = (await store.readProviderAsync(provider.id)).accounts[accountName];
+		logInfo("refresh.lock_contended", {
+			provider: provider.id,
+			account: accountName,
+			usable: stored !== undefined && stored.type === "oauth" && stored.expires > now,
+		});
+		if (stored === undefined || stored.type !== "oauth" || stored.expires <= now) throw error;
+		return stored;
+	}
 	return refreshed;
 }

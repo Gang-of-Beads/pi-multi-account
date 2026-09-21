@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A concurrent rotation no longer fails turns with "Lock file is already being
+  held": callers share one in-flight refresh per account, and a store write
+  refused because another writer holds the lock answers with the credential
+  that writer stored instead of reporting an auth failure.
+
 - Correct the native Anthropic credential warning: run `/logout` and select Anthropic.
 
 ## 0.8.2
