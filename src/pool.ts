@@ -46,7 +46,11 @@ import {
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { anthropicAdapter } from "./adapters.ts";
+import { stripRefusedBoundsInMessages } from "./provider-schema.ts";
 import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
@@ -525,9 +529,44 @@ export function createPoolRuntime(
 		},
 	});
 
+	/**
+	 * The active account's access token, read straight from the store file.
+	 *
+	 * pi 0.87 composes a native override through the built-in provider's auth: it
+	 * reads the extension's own `apiKey` as a *config value* - a string - and an
+	 * extension-supplied `auth.apiKey` method is no longer consulted on that
+	 * path. Without a key here the aggregate is "not configured" the moment the
+	 * native `/login anthropic` credential leaves auth.json, and every pooled
+	 * request dies with `Provider is not configured: anthropic` even though the
+	 * accounts are healthy.
+	 *
+	 * A synchronous peek keeps registration synchronous, which is what lets
+	 * `pi -p --model anthropic/...` resolve before the first session starts. The
+	 * store's own async read stays authoritative for resolution; this only seeds
+	 * the key pi checks, and the pool swaps accounts per request regardless.
+	 */
+	const seededAccessToken = (): string | undefined => {
+		try {
+			const path = join(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "pi-accounts.json");
+			const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+			const providers = (parsed as { providers?: Record<string, { active?: string; accounts?: Record<string, { access?: unknown }> }> }).providers;
+			const state = providers?.["anthropic"];
+			const access = state?.active === undefined ? undefined : state.accounts?.[state.active]?.access;
+			return typeof access === "string" && access.length > 0 ? access : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
 	const registerProviderFor = (definition: PoolDefinition, models: ProviderModel[]): void => {
 		const isNativeOverride = definition.name === NATIVE_POOL_NAME;
 		const stream = (kind: StreamKind) => (model: unknown, context: unknown, opts: unknown) => {
+			// Every provider here is an Anthropic one, and Anthropic's validator
+			// refuses integer bounds that everyone else accepts; see
+			// provider-schema.ts. This runs before the base stream converts the
+			// request, which is the last point the schemas can still be changed.
+			const diagRemoved = stripRefusedBoundsInMessages((context as { messages?: unknown } | undefined)?.messages);
+			if (diagRemoved > 0) logInfo("schema.bounds_stripped", { pool: definition.name, kind, removed: diagRemoved });
 			// Forensics: proves whether the composer actually routed the turn to
 			// the pool. Its absence in a failing turn is the binary answer to
 			// "was the pool even in the loop".
@@ -586,16 +625,26 @@ export function createPoolRuntime(
 			// rolled back - the real failure was unrelated, and the extra
 			// registration churn only fed the multi-runtime provider races.)
 			pi.unregisterProvider(NATIVE_POOL_NAME);
-			pi.registerProvider({
+			// Named form: pi 0.87 routes the object form to
+			// `registerNativeProvider`, which its own auth-status check does not
+			// consult.
+			// Named form. The object form routes to pi's
+			// `registerNativeProvider`, which composes auth from the built-in
+			// provider and never looks at the extension's own; the named form is
+			// the one pi's configuration layer reads. `api` is required by that
+			// path once a custom stream is supplied.
+			pi.registerProvider(definition.name, {
+				api: "anthropic-messages",
 				...(native as Provider),
 				// Visible marker: if the model picker shows "anthropic (pool)",
 				// this registration is the live provider; plain "anthropic" means
 				// the built-in survived and the pool never took over.
 				name: "anthropic (pool)",
+				apiKey: seededAccessToken() ?? "pi-accounts",
 				auth: { apiKey: poolApiKeyAuth(definition) },
 				stream: stream("stream"),
 				streamSimple: stream("streamSimple"),
-			} as Provider);
+			} as unknown as Parameters<typeof pi.registerProvider>[1]);
 		} else {
 			const aliasModels = models.map((model) => ({
 				...model,
@@ -604,17 +653,31 @@ export function createPoolRuntime(
 				baseUrl: "https://api.anthropic.com",
 			}));
 			pi.unregisterProvider(definition.name);
-			pi.registerProvider({
+			// Named form, like the native override: the object form goes to pi's
+			// `registerNativeProvider`, which the composer's stream routing and
+			// auth-status check do not consult. With the named form the composer
+			// sees this extension's `api` and routes the turn through its stream.
+			pi.registerProvider(definition.name, {
 				id: definition.name,
 				name: definition.name,
+				api: "anthropic-messages",
 				baseUrl: "https://api.anthropic.com",
 				headers: { "user-agent": buildUserAgent() },
+				// `auth.apiKey` resolves the account; the top-level `apiKey` is
+				// what pi's `configuredRequestAuthStatus` reads, and it must not
+				// be an env template. Without this the pool is only "configured"
+				// while a native `/login anthropic` credential sits in auth.json:
+				// delete that file's entry and every pooled request dies with
+				// "Provider is not configured: anthropic" even though three
+				// pooled accounts are healthy - the aggregate simply vanishes
+				// from the picker's usable providers.
 				auth: { apiKey: poolApiKeyAuth(definition) },
 				getModels: () => aliasModels,
 				stream: stream("stream"),
 				streamSimple: stream("streamSimple"),
-			} as Provider);
+			} as unknown as Parameters<typeof pi.registerProvider>[1]);
 		}
+
 		poolProviderNames.add(definition.name);
 		logInfo("pool.registered", { name: definition.name, accounts: definition.accounts, nativeOverride: isNativeOverride });
 	};

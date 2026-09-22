@@ -59,6 +59,7 @@ import {
 } from "./refresh.ts";
 import { createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount } from "./pool.ts";
 import { registerPoolCommands } from "./pool-commands.ts";
+import { isAnthropicProvider, stripRefusedBoundsInTools } from "./provider-schema.ts";
 import { readPools } from "./pools-store.ts";
 import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
 import {
@@ -290,6 +291,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Forensics at the death point: pi's own prepareRequest (getAuth → stream).
 	// Wrapped once per runtime instance; logs entry, getAuth outcome, and throw.
 	pi.on("session_start", async (_event, ctx) => {
+		try {
+			// pi 0.87's CLI sends without ever calling a provider stream, so the
+			// strip in the pool's wrapper cannot cover `pi -p --model
+			// anthropic/...`; the prompt's tool declarations are built from the
+			// registered definitions after this hook, so sweeping them here does.
+			if (isAnthropicProvider(ctx.model?.provider) || ctx.model === undefined) {
+				const removed = stripRefusedBoundsInTools(pi.getAllTools());
+				if (removed > 0) logInfo("schema.bounds_stripped_tools", { provider: ctx.model?.provider, removed });
+			}
+		} catch (error) {
+			logError("schema.bounds_strip_failed", { detail: errorMessage(error) });
+		}
 		try {
 			const rt = ctx.modelRegistry as unknown as {
 				__pmaPrepareWrapped?: boolean;
