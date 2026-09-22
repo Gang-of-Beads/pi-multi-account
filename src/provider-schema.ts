@@ -22,6 +22,10 @@
  * leave the request on the old one, while mutating the nodes themselves reaches
  * the wire. Idempotent, which is what makes a per-request sweep free.
  */
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 const SCHEMA_VALUE_KEYS = ["properties", "patternProperties", "$defs", "definitions"];
 const SCHEMA_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
 const SCHEMA_CHILD_KEYS = ["items", "additionalProperties", "not", "contains", "propertyNames"];
@@ -98,4 +102,29 @@ export function stripRefusedBoundsInTools(tools: readonly { parameters?: unknown
 /** Providers whose endpoint runs the validator this module works around. */
 export function isAnthropicProvider(provider: string | undefined): boolean {
 	return provider === "anthropic" || (provider?.startsWith("anthropic-") ?? false);
+}
+
+/**
+ * The active account's access token, read straight from the store file.
+ *
+ * pi 0.87's one-shot CLI streams at the API level - it never reaches a provider
+ * object - so the only thing that decides whether a pooled request works there
+ * is the key pi resolves: an OAuth token must arrive as a bearer token, and a
+ * literal placeholder sent as `x-api-key` is a 401 that pi retries silently
+ * until the command looks hung. Reading synchronously keeps registration
+ * synchronous, which is what lets `pi -p --model anthropic/...` resolve before
+ * the first session runs.
+ */
+export function activeAnthropicToken(): string | undefined {
+	const path = join(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "pi-accounts.json");
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+	const providers = (parsed as { providers?: Record<string, { active?: string; accounts?: Record<string, { access?: unknown }> }> }).providers;
+	const state = providers?.["anthropic"];
+	const access = state?.active === undefined ? undefined : state.accounts?.[state.active]?.access;
+	return typeof access === "string" && access.length > 0 ? access : undefined;
 }

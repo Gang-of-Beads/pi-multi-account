@@ -50,7 +50,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { anthropicAdapter } from "./adapters.ts";
-import { stripRefusedBoundsInMessages } from "./provider-schema.ts";
+import { activeAnthropicToken, stripRefusedBoundsInMessages } from "./provider-schema.ts";
 import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
@@ -545,18 +545,9 @@ export function createPoolRuntime(
 	 * store's own async read stays authoritative for resolution; this only seeds
 	 * the key pi checks, and the pool swaps accounts per request regardless.
 	 */
-	const seededAccessToken = (): string | undefined => {
-		try {
-			const path = join(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "pi-accounts.json");
-			const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-			const providers = (parsed as { providers?: Record<string, { active?: string; accounts?: Record<string, { access?: unknown }> }> }).providers;
-			const state = providers?.["anthropic"];
-			const access = state?.active === undefined ? undefined : state.accounts?.[state.active]?.access;
-			return typeof access === "string" && access.length > 0 ? access : undefined;
-		} catch {
-			return undefined;
-		}
-	};
+
+
+
 
 	const registerProviderFor = (definition: PoolDefinition, models: ProviderModel[]): void => {
 		const isNativeOverride = definition.name === NATIVE_POOL_NAME;
@@ -640,11 +631,21 @@ export function createPoolRuntime(
 				// this registration is the live provider; plain "anthropic" means
 				// the built-in survived and the pool never took over.
 				name: "anthropic (pool)",
-				apiKey: seededAccessToken() ?? "pi-accounts",
-				auth: { apiKey: poolApiKeyAuth(definition) },
+				apiKey: activeAnthropicToken() ?? "pi-accounts",				auth: { apiKey: poolApiKeyAuth(definition) },
 				stream: stream("stream"),
 				streamSimple: stream("streamSimple"),
 			} as unknown as Parameters<typeof pi.registerProvider>[1]);
+			// The built-in object is patched as well, and this is the part that matters for `pi -p`.
+			//
+			// A named registration is composed against this object, so the composer takes the
+			// built-in's `auth.apiKey` as the method it resolves through (`inherited`) and reads the
+			// built-in's stream as the request entry point. Left alone, the extension's own account
+			// resolution is never called: the CLI prepared the request, opened no connection and
+			// printed nothing, while the alias providers - which have no built-in to compose against -
+			// worked. Patching the object the composer reads is what puts the pool's accounts back
+			// in the path, on every host, without a second registration to fight over the id.
+			Object.assign(native, { auth: { apiKey: poolApiKeyAuth(definition) } });
+			Object.assign(native, { stream: stream("stream"), streamSimple: stream("streamSimple") });
 		} else {
 			const aliasModels = models.map((model) => ({
 				...model,

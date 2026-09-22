@@ -59,8 +59,7 @@ import {
 } from "./refresh.ts";
 import { createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount } from "./pool.ts";
 import { registerPoolCommands } from "./pool-commands.ts";
-import { isAnthropicProvider, stripRefusedBoundsInTools } from "./provider-schema.ts";
-import { readPools } from "./pools-store.ts";
+import { activeAnthropicToken, isAnthropicProvider, stripRefusedBoundsInTools } from "./provider-schema.ts";import { readPools } from "./pools-store.ts";
 import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
 import {
 	healActiveAccount,
@@ -103,6 +102,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// directory — which is the difference between "my token expired" and "another
 	// installation rotated my token away".
 	installAbortDiagnostics();
+
+	// Last-resort forensics: the CLI's one-shot path streams at the API level, so
+	// an auth or beta-header mistake there is otherwise invisible - the command
+	// just sits there. Logs the outcome of any request to Anthropic.
+	{
+		const globalFetch = globalThis.fetch;
+		const marker = globalFetch as { __pmaWrapped?: boolean };
+		if (typeof globalFetch === "function" && marker.__pmaWrapped !== true) {
+			const wrapped = async (input: unknown, init?: unknown): Promise<unknown> => {
+				const url = typeof input === "string" ? input : String((input as { url?: string } | undefined)?.url ?? input);
+				const response = await (globalFetch as (a: unknown, b?: unknown) => Promise<unknown>).call(globalThis, input, init);
+				if (url.includes("api.anthropic.com")) {
+					const status = (response as { status?: number }).status;
+					let detail = "";
+					try {
+						const copy = (response as { clone?: () => { text: () => Promise<string> } }).clone?.();
+						detail = copy === undefined ? "" : (await copy.text()).slice(0, 220);
+					} catch { detail = ""; }
+					logInfo("diag.http", { url: url.replace(/\?.*/u, ""), status, detail });
+				}
+				return response;
+			};
+			Object.assign(wrapped, { __pmaWrapped: true });
+			globalThis.fetch = wrapped as typeof globalThis.fetch;
+		}
+	}
 
 	logInfo("extension.loaded", {
 		cwd: process.cwd(),
@@ -300,6 +325,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				const removed = stripRefusedBoundsInTools(pi.getAllTools());
 				if (removed > 0) logInfo("schema.bounds_stripped_tools", { provider: ctx.model?.provider, removed });
 			}
+			// The key, not just the status: pi 0.87's one-shot CLI streams at the API
+			// level and only consults the resolved key, so a pooled request there
+			// lives or dies on this value being the OAuth token (sent as a bearer)
+			// rather than the placeholder that only exists to satisfy the
+			// configured-provider check.
+			const token = activeAnthropicToken();
+			const runtime = (ctx.modelRegistry as unknown as { runtime?: { setRuntimeApiKey?: (providerId: string, apiKey: string) => Promise<void> } }).runtime;
+			if (token !== undefined && runtime?.setRuntimeApiKey !== undefined) {
+				await runtime.setRuntimeApiKey("anthropic", token);
+			}
 		} catch (error) {
 			logError("schema.bounds_strip_failed", { detail: errorMessage(error) });
 		}
@@ -310,6 +345,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				getAuth?: (...args: unknown[]) => Promise<unknown>;
 			};
 			const target = (rt as { runtime?: typeof rt }).runtime ?? rt;
+			logInfo("diag.pma_runtime_shape", { targetKeys: Object.keys(target).join(","), registryKeys: Object.keys(ctx.modelRegistry).join(","), hasModels: (target as { models?: unknown }).models !== undefined });
 			if (target && !target.__pmaPrepareWrapped && typeof target.prepareRequest === "function") {
 				target.__pmaPrepareWrapped = true;
 				const origPrepare = target.prepareRequest;
@@ -351,7 +387,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 					try {
 						const r = await origPrepare.call(this, model, options);
-						logInfo("diag.rt_prepare_ok", { provider: model?.provider, elapsedMs: Date.now() - t0 });
+						const prepared = r as { options?: { apiKey?: unknown; env?: unknown }; apiKey?: unknown } | undefined;
+						const key = prepared?.options?.apiKey ?? prepared?.apiKey;
+						logInfo("diag.rt_prepare_ok", {
+							provider: model?.provider,
+							elapsedMs: Date.now() - t0,
+							shape: Object.keys((prepared ?? {}) as object).join(","),
+							keyKind: typeof key === "string" ? (key.includes("sk-ant-oat") ? "oauth-token" : key.slice(0, 14)) : typeof key,
+						});
 						return r;
 					} catch (error) {
 						logError("diag.rt_prepare_threw", { provider: model?.provider, elapsedMs: Date.now() - t0, detail: errorMessage(error), ...sigInfo(sig) });
