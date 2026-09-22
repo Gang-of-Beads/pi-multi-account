@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The provider round trip during a token refresh no longer happens under the
+  account-store file lock. Holding the file across an HTTP exchange starved
+  every other pi process for as long as the exchange took, and those processes
+  reported "Lock file is already being held" as an auth failure; the lock is
+  now held only for the write, and a write that cannot take it costs a record
+  rather than the turn.
 - A concurrent rotation no longer fails turns with "Lock file is already being
   held": callers share one in-flight refresh per account, and a store write
   refused because another writer holds the lock answers with the credential

@@ -87,21 +87,44 @@ test("a held store lock answers with the stored credential rather than failing t
 	store.updateProviderAsync = original;
 });
 
-test("a held store lock still fails when the stored credential is unusable", async () => {
+test("a held store lock does not fail a refresh that already succeeded", async () => {
 	resetSuspectCredentialsForTesting();
 	resetRefreshFailuresForTesting();
-	const store = new AccountStore(new InMemoryAccountStorageBackend());
-	await store.updateProviderAsync("anthropic", async () => ({
-		active: "personal",
-		accounts: { personal: { type: "oauth" as const, access: "expired", refresh: "refresh-0", expires: Date.now() - 1000 } },
-	}));
+	const store = await storeWithExpiringCredential();
 	const locked = new Error("Lock file is already being held");
 	Reflect.set(locked, "code", "ELOCKED");
 	store.updateProviderAsync = () => Promise.reject(locked);
 
-	const stale = { type: "oauth" as const, access: "expired", refresh: "refresh-0", expires: Date.now() - 1000 };
-	await assert.rejects(
-		refreshAccountCredential(store, adapter(() => Promise.resolve({ access: "never" })), "personal", stale, Date.now()),
-		/Lock file is already being held/u,
-	);
+	const stale = { type: "oauth" as const, access: "stale", refresh: "refresh-0", expires: Date.now() + 1000 };
+	const result = await refreshAccountCredential(store, adapter(() => Promise.resolve({ access: "fresh-after-lock" })), "personal", stale, Date.now());
+
+	// The token is valid whether or not the file could be written; the round
+	// trip happened outside the lock, so contention costs a record, not a turn.
+	assert.equal(result.access, "fresh-after-lock");
+});
+
+test("the provider round trip does not happen under the store lock", async () => {
+	resetSuspectCredentialsForTesting();
+	resetRefreshFailuresForTesting();
+	const store = await storeWithExpiringCredential();
+	let lockedDuringRefresh = false;
+	let inUpdate = false;
+	const original = store.updateProviderAsync.bind(store);
+	store.updateProviderAsync = async (providerId, mutator) => {
+		inUpdate = true;
+		try {
+			return await original(providerId, mutator);
+		} finally {
+			inUpdate = false;
+		}
+	};
+	const stale = { type: "oauth" as const, access: "stale", refresh: "refresh-0", expires: Date.now() + 1000 };
+
+	await refreshAccountCredential(store, adapter(async () => {
+		lockedDuringRefresh = inUpdate;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		return { access: "fresh" };
+	}), "personal", stale, Date.now());
+
+	assert.equal(lockedDuringRefresh, false, "a network call under the file lock is what starved every other process");
 });

@@ -437,61 +437,67 @@ async function refreshAccountCredentialOnce(
 	now: number,
 	options: { force?: boolean },
 ): Promise<OAuthCredential> {
-	let refreshed = credential;
-	const mutate = async (state: Parameters<Parameters<AccountStore["updateProviderAsync"]>[1]>[0]) => {
-		const latest = state.accounts[accountName];
-		if (!latest || latest.type !== "oauth") {
-			throw new Error(`Account "${accountName}" was removed while refreshing.`);
-		}
-		if (latest.access !== credential.access) {
-			// Another writer refreshed between our read and this lock. Whatever we
-			// were holding is already invalid; saying so here is what makes a
-			// cross-installation rotation legible in the log.
-			logInfo("refresh.superseded", {
-				provider: provider.id,
-				account: accountName,
-				held: credentialSummary(credential),
-				stored: credentialSummary(latest),
-			});
-		}
-		// A credential someone else already replaced is fresh by definition, even
-		// when this one was force-refreshed for being rejected.
-		const supersededByAnotherWriter = latest.access !== credential.access;
-		if (latest.expires > now + REFRESH_SKEW_MS && (!options.force || supersededByAnotherWriter)) {
-			refreshed = latest;
-			return state;
-		}
-		try {
-			refreshed = await provider.oauth.refresh(latest, new AbortController().signal);
-			clearRefreshFailure(provider.id, accountName);
-			storeObserver(provider.id).expectSelfChange(`refresh ${accountName}`);
-			logInfo("refresh.succeeded", {
-				provider: provider.id,
-				account: accountName,
-				before: credentialSummary(latest),
-				after: credentialSummary(refreshed),
-			});
-		} catch (error) {
-			recordRefreshFailure(provider.id, accountName, error, latest, now);
-			throw sanitizeRefreshError(provider.id, accountName, error);
-		}
-		return {
-			...state,
-			accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
-		};
-	};
-	try {
-		await store.updateProviderAsync(provider.id, mutate);
-	} catch (error) {
-		if (!isLockContention(error)) throw error;
-		const stored = (await store.readProviderAsync(provider.id)).accounts[accountName];
-		logInfo("refresh.lock_contended", {
+	// The provider round trip happens OUTSIDE the store lock.
+	//
+	// It used to run inside `updateProviderAsync`, so one refresh held the
+	// account file for the whole HTTP exchange - seconds, sometimes tens of
+	// them. Every other process waiting on that file exhausted
+	// proper-lockfile's retries and reported "Lock file is already being held"
+	// as an auth failure: the owner lost turns to a credential that was fine
+	// and a lock that was merely slow. The lock is now held only for the write.
+	const current = (await store.readProviderAsync(provider.id)).accounts[accountName];
+	if (!current || current.type !== "oauth") {
+		throw new Error(`Account "${accountName}" was removed while refreshing.`);
+	}
+	if (current.access !== credential.access) {
+		logInfo("refresh.superseded", {
 			provider: provider.id,
 			account: accountName,
-			usable: stored !== undefined && stored.type === "oauth" && stored.expires > now,
+			held: credentialSummary(credential),
+			stored: credentialSummary(current),
 		});
-		if (stored === undefined || stored.type !== "oauth" || stored.expires <= now) throw error;
-		return stored;
+		// Someone else already replaced what we were holding; their credential
+		// is fresh by definition, even for a forced refresh of a rejected one.
+		if (current.expires > now + REFRESH_SKEW_MS) return current;
+	}
+	if (current.expires > now + REFRESH_SKEW_MS && options.force !== true) return current;
+
+	let refreshed: OAuthCredential;
+	try {
+		refreshed = await provider.oauth.refresh(current, new AbortController().signal);
+		clearRefreshFailure(provider.id, accountName);
+		storeObserver(provider.id).expectSelfChange(`refresh ${accountName}`);
+		logInfo("refresh.succeeded", {
+			provider: provider.id,
+			account: accountName,
+			before: credentialSummary(current),
+			after: credentialSummary(refreshed),
+		});
+	} catch (error) {
+		recordRefreshFailure(provider.id, accountName, error, current, now);
+		throw sanitizeRefreshError(provider.id, accountName, error);
+	}
+
+	try {
+		await store.updateProviderAsync(provider.id, async (state) => {
+			const latest = state.accounts[accountName];
+			// A writer that landed while the round trip was in flight wins: its
+			// credential is at least as new as this one, and overwriting it would
+			// invalidate a token another process is already using.
+			if (latest && latest.type === "oauth" && latest.access !== current.access) {
+				refreshed = latest;
+				return state;
+			}
+			return {
+				...state,
+				accounts: Object.assign(Object.create(null), state.accounts, { [accountName]: refreshed }),
+			};
+		});
+	} catch (error) {
+		if (!isLockContention(error)) throw error;
+		// The token is valid whether or not it reached the file; a store that
+		// cannot be written is not a failed refresh.
+		logInfo("refresh.lock_contended", { provider: provider.id, account: accountName, wrote: false });
 	}
 	return refreshed;
 }
