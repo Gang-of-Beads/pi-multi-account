@@ -317,6 +317,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Wrapped once per runtime instance; logs entry, getAuth outcome, and throw.
 	pi.on("session_start", async (_event, ctx) => {
 		try {
+			// Re-register last. `registerProvider` merges per key and later
+			// extensions win, and this extension is not the only one registering the
+			// native `anthropic` id - another one may replace the id wholesale with
+			// its own stream, which is how the aggregate kept working in pi-web and
+			// hung in the CLI. Doing it again at session start, after every
+			// extension has loaded, makes the pool's own stream and auth the ones
+			// that answer.
+			for (const definition of readPools()) poolRuntime.registerPool(definition);
+		} catch (error) {
+			logError("pool.reregister_failed", { detail: errorMessage(error) });
+		}
+		try {
 			// pi 0.87's CLI sends without ever calling a provider stream, so the
 			// strip in the pool's wrapper cannot cover `pi -p --model
 			// anthropic/...`; the prompt's tool declarations are built from the
