@@ -315,6 +315,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// session's account, then report it in the footer.
 	// Forensics at the death point: pi's own prepareRequest (getAuth → stream).
 	// Wrapped once per runtime instance; logs entry, getAuth outcome, and throw.
+	// Another extension registers the same native id, and it does so from its own
+	// session_start hook - which runs after ours because it loads later. A
+	// session_start registration therefore still loses the merge; a turn-start
+	// one is later than every session_start and wins, which is what puts the
+	// pool's stream back on the request.
+	let poolsReregistered = false;
+	pi.on("turn_start", async () => {
+		if (poolsReregistered) return;
+		poolsReregistered = true;
+		try {
+			for (const definition of readPools()) poolRuntime.registerPool(definition);
+		} catch (error) {
+			logError("pool.turn_reregister_failed", { detail: errorMessage(error) });
+		}
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			// Re-register last. `registerProvider` merges per key and later
@@ -399,8 +415,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 					try {
 						const r = await origPrepare.call(this, model, options);
-						const prepared = r as { options?: { apiKey?: unknown; env?: unknown }; apiKey?: unknown } | undefined;
+						const prepared = r as { options?: { apiKey?: unknown; fetch?: unknown }; apiKey?: unknown } | undefined;
 						const key = prepared?.options?.apiKey ?? prepared?.apiKey;
+						if (prepared?.options !== undefined) {
+							const inner = (typeof prepared.options.fetch === "function" ? prepared.options.fetch : globalThis.fetch) as (a: unknown, b?: unknown) => Promise<Response>;
+							const marker = inner as { __pmaTraced?: boolean };
+							if (marker.__pmaTraced !== true) {
+								const traced = async (input: unknown, init?: unknown): Promise<Response> => {
+									const url = typeof input === "string" ? input : String((input as { url?: string } | undefined)?.url ?? "");
+									const started = Date.now();
+									const response = await inner.call(globalThis, input, init);
+									let body = "";
+									try { body = (await response.clone().text()).slice(0, 300); } catch { body = "<unreadable>"; }
+									logInfo("diag.http", { url: url.replace(/\?.*/u, ""), status: response.status, ms: Date.now() - started, body });
+									return response;
+								};
+								Object.assign(traced, { __pmaTraced: true });
+								prepared.options.fetch = traced;
+								logInfo("diag.fetch_attached", { optionsKeys: Object.keys(prepared.options).join(","), stuck: prepared.options.fetch === traced });
+							}
+						}
 						logInfo("diag.rt_prepare_ok", {
 							provider: model?.provider,
 							elapsedMs: Date.now() - t0,

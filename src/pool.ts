@@ -645,7 +645,10 @@ export function createPoolRuntime(
 			// worked. Patching the object the composer reads is what puts the pool's accounts back
 			// in the path, on every host, without a second registration to fight over the id.
 			Object.assign(native, { auth: { apiKey: poolApiKeyAuth(definition) } });
-			Object.assign(native, { stream: stream("stream"), streamSimple: stream("streamSimple") });
+			// The streams are NOT patched onto it: `runPool` reaches the real API by
+			// calling the base provider's stream, and that base is this very object,
+			// so patching it made the pool call itself - thousands of times per
+			// request, and the command never returned.
 		} else {
 			const aliasModels = models.map((model) => ({
 				...model,
