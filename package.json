@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-multi-account",
-  "version": "0.8.19",
+  "version": "0.8.20",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
   "type": "module",
@@ -48,9 +48,9 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.85.1",
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.85.1",
+    "@earendil-works/pi-ai": "^0.87.1",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@earendil-works/pi-tui": "^0.87.1",
     "@types/node": "^22.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "jiti": "^2.7.0",
