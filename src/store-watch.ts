@@ -94,18 +94,83 @@ export function diffSnapshots(previous: StoreSnapshot, next: StoreSnapshot): Sto
 	return changes;
 }
 
-/** One-line description of a change, for notifications. */
+/**
+ * One-line description of a change.
+ *
+ * "by another process" is *not* part of it: the description stays the plain fact
+ * and the caller adds the cause, because it once carried the phrase itself and
+ * the caller appended it again — "was rotated by another process (by another
+ * process)", which is what the owner photographed.
+ */
 export function describeChange(change: StoreChange): string {
 	switch (change.kind) {
 		case "active_account":
 			return `active account changed ${change.from ?? "(none)"} → ${change.to ?? "(none)"}`;
 		case "token_rotated":
-			return `token for "${change.account}" was rotated by another process`;
+			return `token for "${change.account}" was rotated`;
 		case "account_added":
 			return `account "${change.account}" was added`;
 		case "account_removed":
 			return `account "${change.account}" was removed`;
 	}
+}
+
+function quotedList(names: string[]): string {
+	if (names.length === 1) return `"${names[0]}"`;
+	const quoted = names.map((name) => `"${name}"`);
+	return `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
+}
+
+/**
+ * Fold a batch of foreign changes into as few sentences as they carry meaning.
+ *
+ * The store is per machine, so one sweep after a rotation reads the same finding
+ * for every account that rotated at once — three notifications saying the same
+ * thing three times, which the owner read as one error reported three times.
+ * Rotations of the same kind become one sentence naming the accounts; an active
+ * account change keeps its own line, because it is the one that says which
+ * account the next request bills to.
+ */
+export function summarizeForeignChanges(changes: StoreChange[]): { text: string; level: "info" | "warning" }[] {
+	const summaries: { text: string; level: "info" | "warning" }[] = [];
+	const rotated: string[] = [];
+	const added: string[] = [];
+	const removed: string[] = [];
+	const flush = (): void => {
+		if (rotated.length > 0) {
+			summaries.push({
+				text: rotated.length === 1 ? `token for ${quotedList(rotated)} was rotated` : `tokens for ${quotedList(rotated)} were rotated`,
+				level: "info",
+			});
+			rotated.length = 0;
+		}
+		if (added.length > 0) {
+			summaries.push({
+				text: added.length === 1 ? `account ${quotedList(added)} was added` : `accounts ${quotedList(added)} were added`,
+				level: "info",
+			});
+			added.length = 0;
+		}
+		if (removed.length > 0) {
+			summaries.push({
+				text: removed.length === 1 ? `account ${quotedList(removed)} was removed` : `accounts ${quotedList(removed)} were removed`,
+				level: "info",
+			});
+			removed.length = 0;
+		}
+	};
+	for (const change of changes) {
+		if (change.kind === "active_account") {
+			flush();
+			summaries.push({ text: describeChange(change), level: "warning" });
+			continue;
+		}
+		if (change.kind === "token_rotated" && change.account !== undefined) rotated.push(change.account);
+		if (change.kind === "account_added" && change.account !== undefined) added.push(change.account);
+		if (change.kind === "account_removed" && change.account !== undefined) removed.push(change.account);
+	}
+	flush();
+	return summaries;
 }
 
 /**

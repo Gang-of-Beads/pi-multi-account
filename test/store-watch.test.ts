@@ -1,7 +1,7 @@
 process.env.PI_MULTI_ACCOUNT_LOG = "0";
 
 import assert from "node:assert/strict";
-import { describeChange, diffSnapshots, drainForeignChanges, snapshotProviderState, StoreObserver } from "../src/store-watch.ts";
+import { describeChange, diffSnapshots, drainForeignChanges, snapshotProviderState, StoreObserver, summarizeForeignChanges } from "../src/store-watch.ts";
 
 const credential = (access: string, refresh = `${access}-r`) => ({ access, refresh, expires: 1 });
 
@@ -60,5 +60,51 @@ assert.equal(
 	describeChange({ kind: "active_account", from: "merchant", to: "personal" }),
 	"active account changed merchant → personal",
 );
+
+// The description stays the plain fact: the caller adds "(by another process)",
+// and when the description carried the phrase too the row read
+// "was rotated by another process (by another process)".
+assert.equal(
+	describeChange({ kind: "token_rotated", account: "personal" }),
+	'token for "personal" was rotated',
+);
+
+// One sweep after a rotation finds the same thing for every account at once.
+// Reporting per change put three identical rows in the transcript, which read as
+// one error reported three times.
+assert.deepEqual(summarizeForeignChanges([
+	{ kind: "token_rotated", account: "personal" },
+	{ kind: "token_rotated", account: "merchant" },
+	{ kind: "token_rotated", account: "work" },
+]), [
+	{ text: 'tokens for "personal", "merchant" and "work" were rotated', level: "info" },
+]);
+
+assert.deepEqual(summarizeForeignChanges([{ kind: "token_rotated", account: "personal" }]), [
+	{ text: 'token for "personal" was rotated', level: "info" },
+]);
+
+// An active account change keeps its own line and its warning level; it decides
+// which account the next request bills to.
+assert.deepEqual(summarizeForeignChanges([
+	{ kind: "token_rotated", account: "personal" },
+	{ kind: "active_account", from: "personal", to: "work" },
+	{ kind: "token_rotated", account: "work" },
+]), [
+	{ text: 'token for "personal" was rotated', level: "info" },
+	{ text: "active account changed personal → work", level: "warning" },
+	{ text: 'token for "work" was rotated', level: "info" },
+]);
+
+assert.deepEqual(summarizeForeignChanges([
+	{ kind: "account_added", account: "a" },
+	{ kind: "account_added", account: "b" },
+	{ kind: "account_removed", account: "c" },
+]), [
+	{ text: 'accounts "a" and "b" were added', level: "info" },
+	{ text: 'account "c" was removed', level: "info" },
+]);
+
+assert.deepEqual(summarizeForeignChanges([]), []);
 
 console.log("ok: store watch");

@@ -60,7 +60,7 @@ import {
 import { createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount } from "./pool.ts";
 import { registerPoolCommands } from "./pool-commands.ts";
 import { activeAnthropicToken, isAnthropicProvider, stripRefusedBoundsInTools } from "./provider-schema.ts";import { readPools } from "./pools-store.ts";
-import { describeChange, drainForeignChanges, storeObserver } from "./store-watch.ts";
+import { drainForeignChanges, storeObserver, summarizeForeignChanges } from "./store-watch.ts";
 import {
 	healActiveAccount,
 	pruneStaleAliasDefaultProvider,
@@ -145,11 +145,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	 * as a different account.
 	 */
 	const reportForeignStoreChanges = (ctx: { ui: { notify: (message: string, level: "info" | "warning" | "error") => void } }): void => {
-		for (const change of drainForeignChanges()) {
-			ctx.ui.notify(
-				`Anthropic accounts: ${describeChange(change)} (by another process). See ${logPath()}.`,
-				change.kind === "active_account" ? "warning" : "info",
-			);
+		for (const summary of summarizeForeignChanges(drainForeignChanges())) {
+			ctx.ui.notify(`Anthropic accounts: ${summary.text} (by another process). See ${logPath()}.`, summary.level);
 		}
 	};
 
