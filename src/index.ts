@@ -47,6 +47,7 @@ import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerBillingLayer } from "./billing.ts";
+import { registerAnthropicModels } from "./models.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
 import { installAbortDiagnostics } from "./abort-diagnostics.ts";
 import { errorMessage } from "./errors.ts";
@@ -318,11 +319,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// one is later than every session_start and wins, which is what puts the
 	// pool's stream back on the request.
 	let poolsReregistered = false;
-	pi.on("turn_start", async () => {
+	pi.on("turn_start", async (_event, ctx) => {
 		if (poolsReregistered) return;
 		poolsReregistered = true;
 		try {
 			for (const definition of readPools()) poolRuntime.registerPool(definition);
+			// The picker's catalogue for `anthropic`: the registry's own models plus any
+			// the installed pi-ai data predates. Done here because a registration that
+			// sets `models` replaces the list, so it has to carry the whole thing.
+			try {
+				const registered = registerAnthropicModels(pi, ctx?.modelRegistry?.getAll?.());
+				if (!registered) logInfo("models.catalogue_skipped", { reason: "registry listed no anthropic models" });
+			} catch (error) {
+				logError("models.catalogue_failed", { detail: errorMessage(error) });
+			}
 		} catch (error) {
 			logError("pool.turn_reregister_failed", { detail: errorMessage(error) });
 		}
