@@ -335,6 +335,9 @@ resetPoolsFileForTesting();
 	const notices = drainPoolNotices();
 	assert.equal(notices.length, 1);
 	assert.match(notices[0]!.message, /Pool "team": account "personal" failed \(429\); retrying with "work"/);
+	// Routine failover: the notice is queued as info so the session can keep quiet
+	// about it, while running out of accounts stays a warning.
+	assert.equal(notices[0]!.level, "info");
 	// The rotation moved to the account that answered; nothing is scheduled,
 	// nothing expires.
 	assert.equal(poolFirstPick("team", await store.readProviderAsync("anthropic")), "work", "rotation now starts at work");

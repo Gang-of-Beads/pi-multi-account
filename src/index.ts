@@ -146,7 +146,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	 * as a different account.
 	 */
 	const reportForeignStoreChanges = (ctx: { ui: { notify: (message: string, level: "info" | "warning" | "error") => void } }): void => {
+		// Only what changed the *active* account is worth saying: a rotation is
+		// routine bookkeeping between processes and the log already has it, while an
+		// account switch decides who the next request bills to.
 		for (const summary of summarizeForeignChanges(drainForeignChanges())) {
+			if (summary.level === "info") continue;
 			ctx.ui.notify(`Anthropic accounts: ${summary.text} (by another process). See ${logPath()}.`, summary.level);
 		}
 	};
@@ -214,7 +218,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 		// Failovers observed mid-stream (where no UI context exists) are shown
 		// here, on the first provider response of the session afterwards.
+		// Same rule for failovers: the routine "retrying with" line is info, an
+		// exhausted pool is a warning, and a 401 is a warning of its own below.
 		for (const notice of drainPoolNotices()) {
+			if (notice.level === "info") continue;
 			ctx.ui.notify(notice.message, notice.level);
 		}
 	});

@@ -453,11 +453,15 @@ export function createPoolRuntime(
 					of: accounts.length,
 					detail: failureMessage.slice(0, 200) || undefined,
 				});
+				// A failover that has somewhere to go is routine - the whole point of
+				// the pool is that a 429 moves to the next account, and announcing each
+				// one buried the notices that mattered. Running out of accounts is not
+				// routine, so that one stays a warning.
 				pendingNotices.push({
 					message: next
 						? `Pool "${definition.name}": account "${accountName}" failed (${errorStatus}); retrying with "${next}".`
 						: `Pool "${definition.name}": account "${accountName}" failed (${errorStatus}); no other account available.`,
-					level: "warning",
+					level: next ? "info" : "warning",
 				});
 			}
 
