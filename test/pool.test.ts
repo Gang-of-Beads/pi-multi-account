@@ -151,7 +151,11 @@ assert.equal(isFailoverEligible(429), true);
 assert.equal(isFailoverEligible(401), true);
 assert.equal(isFailoverEligible(529), true);
 assert.equal(isFailoverEligible(400), false, "a bad request is not worth another account");
-assert.equal(isFailoverEligible(undefined), false);
+assert.equal(
+	isFailoverEligible(undefined),
+	true,
+	"no status means the request never answered - a timeout, or a stream that threw - which is exactly what a pool is for",
+);
 
 // ---------------------------------------------------------------------------
 // Failover through a stub provider

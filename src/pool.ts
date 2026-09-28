@@ -125,7 +125,10 @@ export function resetPoolStateForTesting(): void {
 
 /** Whether a status should move the pool to the next account. */
 export function isFailoverEligible(status: number | undefined): boolean {
-	return status !== undefined && FAILOVER_STATUSES.has(status);
+	// No status at all means the request never produced one: a timeout, or a stream
+	// that threw. Those are the failures a pool exists for, so they fail over too -
+	// the caller still guards on "nothing was streamed yet" before moving on.
+	return status === undefined || FAILOVER_STATUSES.has(status);
 }
 
 /**
