@@ -9,13 +9,13 @@ import { logInfo } from "../src/debug-log.ts";
 const keepalive = setInterval(() => undefined, 1000);
 const captured: Array<{ event: string; data: Record<string, unknown> }> = [];
 const original = logInfo;
-// debug-log 的 logInfo 是模块级导出——直接换不走,这里改用它的输出文件? 简化:
-// installAbortDiagnostics 通过 logInfo 写日志;为了断言,monkey-patch console?
-// 实际上 debug-log.logInfo 写文件+可选 console。这里退而求其次:验证不抛错且
-// fetch 行为不变,再人工核对日志。真正要做断言的话需要依赖注入。
+// debug-log's logInfo is a module-level export - it cannot simply be swapped out; use its output file instead? Simplified:
+// installAbortDiagnostics logs through logInfo; to assert on it, monkey-patch console?
+// In practice debug-log.logInfo writes a file plus optional console output. Settle for less here: verify nothing throws and
+// fetch behaves the same, then check the log by hand. Real assertions would need dependency injection.
 installAbortDiagnostics();
 
-// 1. 正常请求不受影响
+// 1. A normal request is unaffected
 const ok = await fetch("https://api.anthropic.com/v1/messages", {
 	method: "POST",
 	headers: { "content-type": "application/json" },
@@ -23,7 +23,7 @@ const ok = await fetch("https://api.anthropic.com/v1/messages", {
 }).catch((e) => ({ status: 0, error: String(e) }));
 assert.ok(ok, "wrapped fetch returns a response");
 
-// 2. 被 abort 的请求: 探针记录 abort(带栈),且 fetch 以 AbortError 拒绝
+// 2. An aborted request: the probe records the abort (with its stack), and fetch rejects with an AbortError
 const controller = new AbortController();
 const aborting = fetch("https://api.anthropic.com/v1/messages", {
 	method: "POST",
