@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { ACCOUNTS_FILE, type AccountsData, AccountStore, parseAccountsData } from "@narumitw/pi-accounts/src/account-store.ts";
@@ -14,6 +15,10 @@ import type { AccountStorageBackend } from "@narumitw/pi-accounts/src/storage.ts
  * failed with "account store unreadable: Lock file is already being held".
  * Writers replace the file with an atomic rename, so a plain read always sees
  * one complete version; writes still go through the locked backend.
+ *
+ * The read keeps pi-accounts' guard on a credentials file: the path must be a
+ * regular file, opened without following a symlink, so a link planted at the
+ * store's path is refused instead of read.
  */
 export class LocklessReadAccountStore extends AccountStore {
 	constructor(
@@ -29,10 +34,18 @@ export class LocklessReadAccountStore extends AccountStore {
 }
 
 async function readIfExists(filePath: string): Promise<string | undefined> {
+	let handle;
 	try {
-		return await readFile(filePath, "utf8");
+		handle = await open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+		if (error instanceof Error && "code" in error && error.code === "ELOOP") throw new Error(`Accounts path must be a regular file: ${filePath}`);
 		throw error;
+	}
+	try {
+		if (!(await handle.stat()).isFile()) throw new Error(`Accounts path must be a regular file: ${filePath}`);
+		return await handle.readFile("utf8");
+	} finally {
+		await handle.close();
 	}
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -39,6 +39,18 @@ test("a corrupt store still fails loudly", async () => {
 	writeFileSync(file, "{not json", { mode: 0o600 });
 	const store = new LocklessReadAccountStore(file, new FileAccountStorageBackend(file));
 	await assert.rejects(store.readProviderAsync("anthropic"));
+});
+
+test("a store path that is a symlink or not a file is refused, not read", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-multi-account-read-lock-"));
+	const target = join(dir, "elsewhere.json");
+	writeFileSync(target, JSON.stringify({ version: 1, providers: {} }), { mode: 0o600 });
+	const linked = join(dir, "pi-accounts.json");
+	symlinkSync(target, linked);
+	const folder = join(dir, "folder.json");
+	mkdirSync(folder);
+	await assert.rejects(new LocklessReadAccountStore(linked, new FileAccountStorageBackend(linked)).readProviderAsync("anthropic"), /regular file/);
+	await assert.rejects(new LocklessReadAccountStore(folder, new FileAccountStorageBackend(folder)).readProviderAsync("anthropic"), /regular file/);
 });
 
 test("a missing store reads as empty", async () => {
