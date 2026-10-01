@@ -42,7 +42,7 @@
  *     (disable with PI_MULTI_ACCOUNT_ALIASES=0).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
+import { LocklessReadAccountStore } from "./account-store.ts";
 import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
@@ -78,7 +78,7 @@ import {
 import { detectSubscriptionAccounts, type SubscriptionAccount } from "./subscription-credentials.ts";
 
 export default async function (pi: ExtensionAPI): Promise<void> {
-	const store = new AccountStore();
+	const store = new LocklessReadAccountStore();
 	const providers = patchedProviders();
 	anthropicAdapter(); // Fail fast if pi-accounts stops shipping the Anthropic adapter.
 	const refreshLoop = acquireBackgroundRefreshLoop(store, providers);

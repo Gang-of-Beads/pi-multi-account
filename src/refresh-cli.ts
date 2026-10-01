@@ -30,7 +30,7 @@
  * (including "another writer already refreshed it"), 1 when at least one
  * account still needs attention (a re-login, usually).
  */
-import { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
+import { LocklessReadAccountStore } from "./account-store.ts";
 import { anthropicAdapter } from "./adapters.ts";
 import { fingerprint, logInfo } from "./debug-log.ts";
 import { conciseRefreshFailure } from "./errors.ts";
@@ -61,7 +61,7 @@ function parseArgs(argv: string[]): { windowMs: number; force: boolean; json: bo
 
 async function main(): Promise<number> {
 	const { windowMs, force, json } = parseArgs(process.argv.slice(2));
-	const store = new AccountStore();
+	const store = new LocklessReadAccountStore();
 	const adapter = anthropicAdapter();
 	const now = Date.now();
 
