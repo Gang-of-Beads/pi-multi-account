@@ -50,6 +50,7 @@ import { registerBillingLayer } from "./billing.ts";
 import { registerAnthropicModels } from "./models.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
 import { installAbortDiagnostics } from "./abort-diagnostics.ts";
+import { logProviderResponse } from "./response-log.ts";
 import { errorMessage } from "./errors.ts";
 import { parseNameList } from "./names.ts";
 import {
@@ -114,15 +115,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const wrapped = async (input: unknown, init?: unknown): Promise<unknown> => {
 				const url = typeof input === "string" ? input : String((input as { url?: string } | undefined)?.url ?? input);
 				const response = await (globalFetch as (a: unknown, b?: unknown) => Promise<unknown>).call(globalThis, input, init);
-				if (url.includes("api.anthropic.com")) {
-					const status = (response as { status?: number }).status;
-					let detail = "";
-					try {
-						const copy = (response as { clone?: () => { text: () => Promise<string> } }).clone?.();
-						detail = copy === undefined ? "" : (await copy.text()).slice(0, 220);
-					} catch { detail = ""; }
-					logInfo("diag.http", { url: url.replace(/\?.*/u, ""), status, detail });
-				}
+				if (url.includes("api.anthropic.com") && response instanceof Response) logProviderResponse(response, { url: url.replace(/\?.*/u, "") });
 				return response;
 			};
 			Object.assign(wrapped, { __pmaWrapped: true });
@@ -439,9 +432,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 									const url = typeof input === "string" ? input : String((input as { url?: string } | undefined)?.url ?? "");
 									const started = Date.now();
 									const response = await inner.call(globalThis, input, init);
-									let body = "";
-									try { body = (await response.clone().text()).slice(0, 300); } catch { body = "<unreadable>"; }
-									logInfo("diag.http", { url: url.replace(/\?.*/u, ""), status: response.status, ms: Date.now() - started, body });
+									logProviderResponse(response, { url: url.replace(/\?.*/u, ""), ms: Date.now() - started });
 									return response;
 								};
 								Object.assign(traced, { __pmaTraced: true });

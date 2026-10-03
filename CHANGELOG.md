@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replies stream again. The diagnostic response log read every provider reply to
+  its end before handing it back, so no provider streamed in any pi that loads
+  this extension: the whole reply arrived in one burst when it was finished. The
+  log now reads a copy alongside the stream.
 - The provider round trip during a token refresh no longer happens under the
   account-store file lock. Holding the file across an HTTP exchange starved
   every other pi process for as long as the exchange took, and those processes
