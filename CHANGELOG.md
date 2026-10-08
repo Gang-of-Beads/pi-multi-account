@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The abort diagnostics no longer log every abort in the process. In a PI WEB
+  session daemon that was over a thousand stack-carrying lines a minute, written
+  synchronously on the loop that serves every session (98% of the log, which
+  then rotated every few minutes). Each abort now only remembers its caller,
+  and the caller is logged when a request finds its signal already aborted
+  (`abortedBy` on `diag.rt_prepare_entered` and its siblings).
 - Replies stream again. The diagnostic response log read every provider reply to
   its end before handing it back, so no provider streamed in any pi that loads
   this extension: the whole reply arrived in one burst when it was finished. The

@@ -49,7 +49,7 @@ import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerBillingLayer } from "./billing.ts";
 import { registerAnthropicModels } from "./models.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
-import { installAbortDiagnostics } from "./abort-diagnostics.ts";
+import { abortedBy, installAbortDiagnostics } from "./abort-diagnostics.ts";
 import { logProviderResponse } from "./response-log.ts";
 import { errorMessage } from "./errors.ts";
 import { parseNameList } from "./names.ts";
@@ -389,6 +389,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					hasSignal: s !== undefined,
 					aborted: s?.aborted ?? null,
 					reason: s?.aborted ? String((s.reason as { message?: string })?.message ?? s.reason).slice(0, 120) : undefined,
+					abortedBy: s?.aborted ? abortedBy(s) : undefined,
 				});
 				if (typeof origGetAuth === "function") {
 					target.getAuth = async function (this: unknown, ...args: unknown[]) {

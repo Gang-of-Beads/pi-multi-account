@@ -14,8 +14,18 @@
  *     in-flight Anthropic request's signal fires, the aborter's own stack is
  *     captured — that is the answer to "who called abort".
  *
- * Overhead is one Map lookup per fetch and one per abort; nothing else in
- * the process changes behavior.
+ * A turn's signal can also arrive at pi's prepareRequest already aborted, by
+ * an abort() no request was listening to yet. Every abort therefore keeps its
+ * caller as an unformatted Error in a WeakMap keyed by the signal, and
+ * `abortedBy` formats it only when such a signal is reported. This used to
+ * log every abort in the process with its stack, synchronously: in a PI WEB
+ * session daemon that was 1000-1400 lines a minute (98% of this log, which
+ * then rotated every few minutes), nearly all from Node's stream pipelines
+ * and PI WEB's bounded workspace operations, and about 2.9 s of a 24.8 s open
+ * of an 847 MB session (2026-10-08).
+ *
+ * Overhead is one Map lookup per fetch and, per abort, one Error capture and
+ * one WeakMap write; nothing else in the process changes behavior.
  */
 import { logInfo } from "./debug-log.ts";
 
@@ -32,12 +42,21 @@ interface InFlight {
 // AbortController patch finds nothing. One wrapper, one shared map.
 const GLOBAL_KEY = "__piMultiAccountAbortDiag" as const;
 const globalState = (globalThis as Record<string, unknown>)[GLOBAL_KEY] as
-	| { installed: boolean; inFlight: Map<AbortSignal, InFlight> }
+	| { installed: boolean; inFlight: Map<AbortSignal, InFlight>; aborters?: WeakMap<AbortSignal, Error> }
 	| undefined;
 const state = globalState ?? { installed: false, inFlight: new Map<AbortSignal, InFlight>() };
+state.aborters ??= new WeakMap<AbortSignal, Error>();
 (globalThis as Record<string, unknown>)[GLOBAL_KEY] = state;
 
 const inFlight = state.inFlight;
+const aborters = state.aborters;
+
+/** Who aborted this signal, as the stack of its abort() call; undefined when unknown or not aborted. */
+export function abortedBy(signal: AbortSignal | undefined): string | undefined {
+	const caller = signal === undefined ? undefined : aborters.get(signal);
+	if (caller === undefined) return undefined;
+	return (caller.stack ?? "").split("\n").slice(1, 20).map((f) => f.trim().replace(/^at /, "").replace(/file:\/\/\/nix\/store\/[^/]+\//, "").replace(/\/Users\/[^/]+\/\.pi\/agent\/git\/github\.com\//, "")).join(" | ").slice(0, 3000);
+}
 
 function frames(stack: string, count: number): string {
 	return stack
@@ -94,15 +113,7 @@ export function installAbortDiagnostics(): void {
 
 	const originalAbort = AbortController.prototype.abort;
 	AbortController.prototype.abort = function (this: AbortController, reason?: unknown): AbortSignal {
-		// Log every abort with its caller: the failing turn's signal arrives at
-		// prepareRequest already aborted by an anonymous abort(), and only a
-		// stack at the abort call itself can name it.
-		if (!this.signal.aborted) {
-			logInfo("diag.abort_any", {
-				stack: (new Error().stack ?? "").split("\n").slice(1, 20).map((f) => f.trim().replace(/^at /, "").replace(/file:\/\/\/nix\/store\/[^/]+\//, "").replace(/\/Users\/hanxiao\.du\/\.pi\/agent\/git\/github\.com\//, "")).join(" | ").slice(0, 3000),
-				reason: reason === undefined ? "(none)" : String(reason).slice(0, 100),
-			});
-		}
+		if (!this.signal.aborted) aborters.set(this.signal, new Error("abort() called here"));
 		const meta = inFlight.get(this.signal);
 		if (meta) {
 			logInfo("diag.abort_called", {
