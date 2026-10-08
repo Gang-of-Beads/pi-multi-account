@@ -113,14 +113,15 @@ export function installAbortDiagnostics(): void {
 
 	const originalAbort = AbortController.prototype.abort;
 	AbortController.prototype.abort = function (this: AbortController, reason?: unknown): AbortSignal {
-		if (!this.signal.aborted) aborters.set(this.signal, new Error("abort() called here"));
+		const caller = new Error("abort() called here");
+		if (!this.signal.aborted) aborters.set(this.signal, caller);
 		const meta = inFlight.get(this.signal);
 		if (meta) {
 			logInfo("diag.abort_called", {
 				url: meta.url.slice(0, 80),
 				elapsedMs: Date.now() - meta.startedAt,
 				reason: reason instanceof Error ? reason.message : reason === undefined ? "(none)" : String(reason).slice(0, 120),
-				calledBy: frames(new Error().stack ?? "", 8),
+				calledBy: frames(caller.stack ?? "", 8),
 			});
 		}
 		return originalAbort.call(this, reason) as unknown as AbortSignal;
