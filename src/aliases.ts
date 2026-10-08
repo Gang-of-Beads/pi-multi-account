@@ -17,7 +17,9 @@ import { storeObserver } from "./store-watch.ts";
 
 export const ALIAS_PREFIX = "anthropic-";
 
-type ProviderModel = ProviderModelConfig & Record<string, unknown>;
+// Aliases only re-register Anthropic chat models; pi 1.x widened
+// ProviderModelConfig to also cover image and classifier models.
+type ProviderModel = Exclude<ProviderModelConfig, { type: "image" | "classifier" }> & Record<string, unknown>;
 
 /** Registration surface used by the entrypoint and by the account menus. */
 export interface AliasRegistry {
