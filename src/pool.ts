@@ -228,6 +228,17 @@ function errorEvent(message: string, reason: "error" | "aborted" = "error"): Ass
 	} as unknown as AssistantMessageEvent;
 }
 
+/**
+ * A stream's own failure as pi's "aborted" ending, keeping what it already
+ * streamed. The caller stopped the request, so pi must see an abort whatever
+ * the inner provider called it: re-reported as an error, a Stop read as a
+ * provider failure (PI WEB: "The model provider returned an error").
+ */
+function asAborted(failure: AssistantMessageEvent): AssistantMessageEvent {
+	const error = (failure as { error?: Record<string, unknown> }).error ?? {};
+	return { ...failure, type: "error", reason: "aborted", error: { ...error, stopReason: "aborted" } } as unknown as AssistantMessageEvent;
+}
+
 export function createPoolRuntime(
 	pi: ExtensionAPI,
 	store: AccountStore,
@@ -426,7 +437,15 @@ export function createPoolRuntime(
 				const failureMessage = errorBody?.errorMessage ?? "";
 				tried.push({ account: accountName, status: errorStatus, detail: failureMessage });
 				const aborted = signal?.aborted === true || (failure as { reason?: string }).reason === "aborted";
-				const eligible = !aborted && !sawContent && isFailoverEligible(errorStatus);
+				if (aborted) {
+					// The caller stopped the request (pi's Stop). That is not this
+					// account failing, so it ends as pi's own abort, keeping the text
+					// already streamed, instead of being re-reported as an error.
+					outer.push(asAborted(failure));
+					outer.end();
+					return;
+				}
+				const eligible = !sawContent && isFailoverEligible(errorStatus);
 				if (!eligible) {
 					// Non-failover errors are pushed verbatim elsewhere, but the
 					// account attribution must still reach the user: a bare 400 or
@@ -470,8 +489,9 @@ export function createPoolRuntime(
 
 			// Every account failed (or none could resolve). Report the last real
 			// provider error, or an honest summary when none ever got that far.
-			// An aborted loop reports the abort, not a pool-wide failure.
-			if (signal?.aborted && !lastFailure) {
+			// An aborted loop reports the abort, not a pool-wide failure, even
+			// when an account failed over before the caller stopped it.
+			if (signal?.aborted) {
 				outer.push(errorEvent("Request was aborted", "aborted"));
 				outer.end();
 				return;

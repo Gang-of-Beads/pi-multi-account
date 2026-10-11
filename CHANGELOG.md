@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A request you stop ends as stopped again. The pool re-reported an abort as
+  the serving account's error, with the account attached, so a Stop read as a
+  provider failure (PI WEB: "The model provider returned an error") and the
+  text already streamed was dropped from the saved reply. A Stop that came
+  after a failover reported the earlier account's error instead. Both now end
+  as pi's own "aborted".
 - The abort diagnostics no longer log every abort in the process. In a PI WEB
   session daemon that was over a thousand stack-carrying lines a minute, written
   synchronously on the loop that serves every session (98% of the log, which
