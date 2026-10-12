@@ -507,6 +507,17 @@ export function createPoolRuntime(
 					// Non-failover errors are pushed verbatim elsewhere, but the
 					// account attribution must still reach the user: a bare 400 or
 					// 503 says nothing about which credential produced it.
+					// Logged with both conditions, because "it did not fail over" alone
+					// cannot be told apart from "the pool never tried".
+					logInfo("pool.rejected", {
+						pool: definition.name,
+						account: accountName,
+						status: errorStatus,
+						reason: failoverReason(errorStatus),
+						sawContent,
+						accounts: accounts.length,
+						detail: failureMessage.slice(0, 160) || undefined,
+					});
 					outer.push(errorEvent(`${failureMessage}\n\npi-multi-account: pool "${definition.name}", account "${accountName}".`));
 					outer.end();
 					return;
