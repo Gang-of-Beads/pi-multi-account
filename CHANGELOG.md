@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.25
 
 - **The claimed version and the user-agent can no longer disagree.** The module
   has always required them to match; `ANTHROPIC_USER_AGENT` was the one way to
