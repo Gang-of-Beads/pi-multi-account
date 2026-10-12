@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.31
 
 - **A block that hits every account now gets one more pass before the turn ends.**
   The gateway's client-fingerprint block tracks the request, not the credential: a
