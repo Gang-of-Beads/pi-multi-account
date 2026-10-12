@@ -6,7 +6,7 @@
  *   adapters.ts             patched pi-accounts provider adapters
  *   refresh.ts              background refresh sweep + single-credential refresh
  *   aliases.ts              `anthropic-<account>` providers shown by /model
- *   pool.ts                 aggregate pool runtime: failover + cooldowns
+ *   pool.ts                 aggregate pool runtime: failover + rotation
  *   pools-store.ts          user-defined pool definitions (name + accounts)
  *   pool-commands.ts        /pools, /pool-create, /pool-add/-remove/-delete
  *   accounts-menu.ts        /accounts (login, re-login, switch, rename, remove)
@@ -26,10 +26,11 @@
  *
  * Extras:
  *   - User-defined aggregate pools: /pool-create names a provider that tries
- *     its accounts in order and fails over automatically on 429/401/403/5xx,
- *     with a per-account cooldown honoring `retry-after`. A pool named
- *     `anthropic` overrides the native provider (disable pool registration
- *     with PI_MULTI_ACCOUNT_FAILOVER=0).
+ *     its accounts in order and fails over automatically before any content has
+ *     streamed - on a retryable status, on a request that never answered, and on
+ *     a 2xx whose stream then failed, which is how the gateway delivers its
+ *     client-fingerprint block. A pool named `anthropic` overrides the native
+ *     provider (disable pool registration with PI_MULTI_ACCOUNT_FAILOVER=0).
  *   - Auto-imports Claude Code accounts found in the macOS Keychain or
  *     `~/.claude/.credentials.json` when the account store is empty
  *     (disable with PI_MULTI_ACCOUNT_AUTO_IMPORT=0). Interactive sessions ask

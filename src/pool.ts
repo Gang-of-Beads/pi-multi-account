@@ -3,7 +3,7 @@
  *
  * A pool is user-defined (`/pool-create`): it binds a provider id the user
  * chose to a set of Anthropic accounts, and every request through it walks the
- * accounts in order — healthy ones first, cooled-down ones trailing — until
+ * accounts in order, starting where the last request left off — until
  * one answers. Per-account `anthropic-<name>` aliases are untouched: they
  * keep talking to exactly their own account.
  *
@@ -21,6 +21,11 @@
  *   content was forwarded can be retried with the next account's credential
  *   without any risk of duplicated output. An error after content started is
  *   forwarded as-is: retrying then could duplicate or diverge partial output.
+ *   A 2xx response that fails on the stream is the exception: pi-ai has already
+ *   emitted `start` once the headers are back, so the pool holds `start` for the
+ *   whole attempt, drops it on failure and forwards it only when an attempt
+ *   produces real output — that is what keeps "nothing was streamed yet" true
+ *   for the next account.
  * - The registration replaces the native provider object wholesale (the string
  *   form of `registerProvider` cannot override `stream`); every field except
  *   the request entry points is inherited, so auth, /login, the catalogue and
@@ -123,12 +128,41 @@ export function resetPoolStateForTesting(): void {
 	poolCursor.clear();
 }
 
-/** Whether a status should move the pool to the next account. */
+/**
+ * Why a failed attempt is worth another account, or `undefined` when it is not.
+ *
+ * `no-status` - the request never produced one: a timeout, or a stream that threw.
+ * `transient-status` - the provider answered with a status that says "later".
+ * `stream-error` - the request resolved without a 4xx/5xx status and the stream then failed. This is
+ * how the Anthropic gateway delivers its client-fingerprint block: an `event: error`
+ * inside a 200 response, so no 4xx/5xx status ever exists to match. The observed
+ * incident: a pool sat on one account while every retry hit the same block.
+ */
+export type FailoverReason = "no-status" | "transient-status" | "stream-error";
+
+export function failoverReason(status: number | undefined): FailoverReason | undefined {
+	if (status === undefined || status === 0) return "no-status";
+	if (FAILOVER_STATUSES.has(status)) return "transient-status";
+	return status < 400 ? "stream-error" : undefined;
+}
+
+/**
+ * Whether a status should move the pool to the next account.
+ *
+ * The caller still guards on "nothing was streamed yet", so a mid-stream break
+ * with a partial answer is not silently replayed on top of what the user has.
+ */
 export function isFailoverEligible(status: number | undefined): boolean {
-	// No status at all means the request never produced one: a timeout, or a stream
-	// that threw. Those are the failures a pool exists for, so they fail over too -
-	// the caller still guards on "nothing was streamed yet" before moving on.
-	return status === undefined || FAILOVER_STATUSES.has(status);
+	return failoverReason(status) !== undefined;
+}
+
+/** How a failure reads to the user, so a 200-with-error is not "failed (200)". */
+function describeFailure(reason: FailoverReason, status: number | undefined): string {
+	return reason === "no-status"
+		? "failed before answering"
+		: reason === "stream-error"
+			? `answered ${status} then failed on the stream`
+			: `failed (${status})`;
 }
 
 /**
@@ -401,15 +435,36 @@ export function createPoolRuntime(
 
 				const { events, captured } = attempt(kind, model, context, options_, accountName, credential);
 				let sawContent = false;
+				let heldStart: AssistantMessageEvent | undefined;
 				let failure: AssistantMessageEvent | undefined;
+				/**
+				 * Forward one event, holding the engine's synthetic `start` back.
+				 *
+				 * pi-ai emits `start` as soon as the response headers arrive, before the body
+				 * can still fail, so an attempt that dies on the first SSE event would look
+				 * like it had already streamed - and its `start` would be followed by a second
+				 * one after the retry. Holding it makes "nothing was streamed yet" mean what
+				 * it says: the next account starts the answer, not continues one.
+				 */
+				const forward = (event: AssistantMessageEvent): void => {
+					if (event.type === "start") {
+						heldStart = event;
+						return;
+					}
+					if (heldStart) {
+						outer.push(heldStart);
+						heldStart = undefined;
+					}
+					sawContent = true;
+					outer.push(event);
+				};
 				try {
 					for await (const event of events) {
 						if (event.type === "error") {
 							failure = event;
 							break;
 						}
-						sawContent = true;
-						outer.push(event);
+						forward(event);
 					}
 				} catch (error) {
 					// The inner stream itself threw (unexpected): treat as a failure
@@ -423,7 +478,9 @@ export function createPoolRuntime(
 					// The account that worked becomes the next request's starting
 					// point: rotation only moves on failure.
 					setPoolCursor(definition.name, accountName);
-					if (!sawContent) {
+					const responded = sawContent || heldStart !== undefined;
+					if (heldStart) outer.push(heldStart);
+					if (!responded) {
 						// Defensive: a stream that ended without any event at all.
 						outer.push(errorEvent(`pi-multi-account: account "${accountName}" produced no response.`));
 					}
@@ -462,6 +519,7 @@ export function createPoolRuntime(
 					markCredentialSuspect("anthropic", accountName, `provider answered ${errorStatus}`);
 				}
 				lastFailure = failure;
+				const reason = failoverReason(errorStatus)!;
 				const next = accounts[index + 1];
 				// Move the rotation on, so the next request starts at the account
 				// this one is about to try instead of failing here again.
@@ -471,6 +529,7 @@ export function createPoolRuntime(
 					from: accountName,
 					to: next ?? "(none)",
 					status: errorStatus,
+					reason,
 					attempt: index + 1,
 					of: accounts.length,
 					detail: failureMessage.slice(0, 200) || undefined,
@@ -481,8 +540,8 @@ export function createPoolRuntime(
 				// routine, so that one stays a warning.
 				pendingNotices.push({
 					message: next
-						? `Pool "${definition.name}": account "${accountName}" failed (${errorStatus}); retrying with "${next}".`
-						: `Pool "${definition.name}": account "${accountName}" failed (${errorStatus}); no other account available.`,
+						? `Pool "${definition.name}": account "${accountName}" ${describeFailure(reason, errorStatus)}; retrying with "${next}".`
+						: `Pool "${definition.name}": account "${accountName}" ${describeFailure(reason, errorStatus)}; no other account available.`,
 					level: next ? "info" : "warning",
 				});
 			}

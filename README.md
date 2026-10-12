@@ -48,7 +48,7 @@ Create a pool with an ordered account list:
 /pool-create team personal work
 ```
 
-Then select `team/<model>` in `/model`. The pool tries one account at a time, rotates after an eligible failure, and retries the same request with the next account only before any content has streamed. It has no cooldown or retry-after scheduler; a failed account is simply no longer the next starting point.
+Then select `team/<model>` in `/model`. The pool tries one account at a time and retries the same request with the next account only before any content has streamed. An attempt is worth another account when it never answered (a timeout, a stream that threw), when it answered with a retryable status (401/403/408/429, 5xx), or when it answered `200` and the stream then failed — the shape the Anthropic gateway uses for its client-fingerprint block. It has no cooldown or retry-after scheduler; a failed account is simply no longer the next starting point.
 
 A pool named `anthropic` deliberately replaces the native Anthropic provider, so `anthropic/<model>` also fails over. All pools are stored in `~/.pi/agent/pi-multi-account-pools.json` and are restored at session start.
 

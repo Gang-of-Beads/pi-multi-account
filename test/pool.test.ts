@@ -29,6 +29,7 @@ import { isCredentialSuspect, resetSuspectCredentialsForTesting } from "../src/r
 import {
 	createPoolRuntime,
 	drainPoolNotices,
+	failoverReason,
 	isFailoverEligible,
 	isPoolProvider,
 	lastPoolAccount,
@@ -147,9 +148,24 @@ assert.deepEqual(planAccountOrder(["a", "b", "c"], "gone"), ["a", "b", "c"], "an
 assert.deepEqual(planAccountOrder([], "a"), [], "an empty pool stays empty");
 
 // Status classification.
+assert.equal(failoverReason(undefined), "no-status");
+assert.equal(failoverReason(429), "transient-status");
+assert.equal(
+	failoverReason(200),
+	"stream-error",
+	"a 2xx that then failed on the stream is how the gateway delivers its client-fingerprint block",
+);
+assert.equal(failoverReason(400), undefined, "a request problem is not an account problem");
+assert.equal(failoverReason(301), "stream-error", "a resolved 3xx that then failed is still a stream error");
+assert.equal(failoverReason(0), "no-status", "a literal 0 means the request never answered");
 assert.equal(isFailoverEligible(429), true);
 assert.equal(isFailoverEligible(401), true);
 assert.equal(isFailoverEligible(529), true);
+assert.equal(
+	isFailoverEligible(200),
+	true,
+	"a 200-with-error has no status in the 4xx/5xx family to match, so it must be eligible on its own",
+);
 assert.equal(isFailoverEligible(400), false, "a bad request is not worth another account");
 assert.equal(
 	isFailoverEligible(undefined),
@@ -168,6 +184,10 @@ interface FakeStep {
 	text?: string;
 	/** Fail *after* content was streamed: must not be retried. */
 	errorAfterContent?: string;
+	/** Fail on the stream from a 2xx *before* any content: the gateway's block shape. */
+	errorOnStream?: string;
+	/** The request itself throws (no response, so no status). */
+	fetchError?: string;
 }
 
 interface FakeOptions {
@@ -199,7 +219,26 @@ function makeFakeProvider(script: FakeStep[]): BaseStreamHost & { requests: Fake
 		void (async () => {
 			// The pool wraps the caller's fetch; this call is the "HTTP request",
 			// served from the script — never from the network.
-			const response = await options.fetch("https://api.anthropic.com/v1/messages", { method: "POST", body: "{}" });
+			let response: Response;
+			try {
+				response = await options.fetch("https://api.anthropic.com/v1/messages", { method: "POST", body: "{}" });
+			} catch (error) {
+				// pi-ai catches a failed request and reports it as one error event.
+				stream.push({
+					type: "error",
+					reason: "error",
+					error: {
+						role: "assistant",
+						content: [],
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+						stopReason: "error",
+						errorMessage: (error as Error).message,
+						timestamp: Date.now(),
+					},
+				} as unknown as AssistantMessageEvent);
+				stream.end();
+				return;
+			}
 			void options.signal;
 			if (response.status >= 400) {
 				stream.push({
@@ -224,6 +263,18 @@ function makeFakeProvider(script: FakeStep[]): BaseStreamHost & { requests: Fake
 				stopReason: "stop",
 				timestamp: Date.now(),
 			};
+			if (step.errorOnStream !== undefined) {
+				// Exactly what pi-ai does with an `event: error` SSE line: `start` once
+				// the headers arrive, then one error event and no content.
+				stream.push({ type: "start", partial: message } as unknown as AssistantMessageEvent);
+				stream.push({
+					type: "error",
+					reason: "error",
+					error: { ...message, stopReason: "error", errorMessage: step.errorOnStream },
+				} as unknown as AssistantMessageEvent);
+				stream.end();
+				return;
+			}
 			if (step.errorAfterContent !== undefined) {
 				stream.push({ type: "start", partial: message } as unknown as AssistantMessageEvent);
 				stream.push({ type: "text_start", contentIndex: 0, partial: message } as unknown as AssistantMessageEvent);
@@ -253,6 +304,7 @@ function makeFakeProvider(script: FakeStep[]): BaseStreamHost & { requests: Fake
 		// pool's capture wrapper wraps it and the stub never touches the network.
 		fetch: (async (_input: unknown, _init?: unknown) => {
 			const step = script[Math.min(requests.length - 1, script.length - 1)]!;
+			if (step.fetchError !== undefined) throw new Error(step.fetchError);
 			return responseFor(step);
 		}) as typeof fetch,
 		requests,
@@ -472,6 +524,72 @@ resetPoolsFileForTesting();
 	assert.equal(fake.requests.length, 1, "no second attempt after content was forwarded");
 	assert.deepEqual(drainPoolNotices(), [], "no failover happened, so nothing is queued");
 }
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+{
+	// A 2xx whose stream fails before any event is how the Anthropic gateway
+	// reports its client-fingerprint block: `event: error` inside a 200 response,
+	// so no status in FAILOVER_STATUSES ever matches. The pool used to stay on the
+	// blocked account and repeat the block on every manual retry.
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([
+		{ status: 200, errorOnStream: "This request was blocked as it seems to violate Anthropic's Terms of Service restrictions" },
+		{ status: 200, text: "hello from work" },
+	]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	upsertPool({ name: "team", accounts: ["personal", "work"] });
+	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
+	const registered = providers["team"]!;
+
+	const { events, result } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	// The blocked attempt's `start` is held back, so the caller sees one answer
+	// rather than a start followed by a second start after the retry.
+	assert.deepEqual(
+		events.map((event) => event.type),
+		["start", "text_start", "done"],
+		"exactly one start reaches the caller",
+	);
+	assert.equal((result as { content: Array<{ text?: string }> }).content[0]?.text, "hello from work", "the block never reaches the caller");
+	assert.equal(fake.requests[0]?.apiKey, "access-personal", "the first attempt used the first pool account");
+	assert.equal(fake.requests[1]?.apiKey, "access-work", "a 200-with-error fails over to the next account");
+	assert.equal(
+		poolFirstPick("team", await store.readProviderAsync("anthropic")),
+		"work",
+		"rotation moved off the account that answered with an error",
+	);
+
+	const notices = drainPoolNotices();
+	assert.equal(notices.length, 1);
+	assert.match(
+		notices[0]!.message,
+		/account "personal" answered 200 then failed on the stream; retrying with "work"/,
+		"the notice does not read as a 200 failure",
+	);
+	assert.equal(notices[0]!.level, "info");
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+{
+	// A request that never got a response has no status to show.
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([{ status: 0, fetchError: "Connection error." }, { status: 200, text: "hello from work" }]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	upsertPool({ name: "team", accounts: ["personal", "work"] });
+	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
+	const registered = providers["team"]!;
+
+	const { result } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	assert.equal((result as { content: Array<{ text?: string }> }).content[0]?.text, "hello from work");
+	const notices = drainPoolNotices();
+	assert.equal(notices.length, 1);
+	assert.match(notices[0]!.message, /account "personal" failed before answering; retrying with "work"/);
+}
+resetSuspectCredentialsForTesting();
 resetPoolStateForTesting();
 resetPoolsFileForTesting();
 

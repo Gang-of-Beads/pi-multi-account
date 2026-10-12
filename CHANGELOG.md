@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- **A blocked request now fails over instead of repeating the block.** The
+  Anthropic gateway delivers its client-fingerprint refusal - "This request was
+  blocked as it seems to violate Anthropic's Terms of Service restrictions on
+  reverse engineering or duplicating model outputs" - as an `event: error`
+  *inside a 200 response*. Every response that day logged `200`, so the pool's
+  status check found nothing to fail over on: it reported the error verbatim and
+  left the rotation on the blocked account, which is why "send a message to try
+  again" hit the same account and the same block every time. The observed rate
+  that day was 5 blocks in 68 requests, so a single automatic retry would usually
+  have succeeded, and the second pool account was never tried at all.
+
+  Eligibility is now a named classifier instead of a status-set membership:
+  `no-status` (a timeout, or a stream that threw), `transient-status` (the old
+  set), and `stream-error` (a request that resolved with a 2xx and whose stream
+  then failed). Getting `stream-error` to fire needed a second fix: pi-ai pushes
+  the synthetic `start` event as soon as the response *headers* arrive, before the
+  body can still fail, so "nothing was streamed yet" was answering yes on a
+  request that had streamed nothing but the headers. That `start` is now held
+  until the attempt produces its first real event, which also means a retry looks
+  like one answer to the caller instead of a start followed by a second start. A
+  failure *after* real content still does not replay. The failover notice says
+  `answered 200 then failed on the stream` rather than the misread `failed (200)`,
+  and the pool log records which reason fired.
+
 ## 0.8.25
 
 - **The claimed version and the user-agent can no longer disagree.** The module
