@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.26
 
 - **A blocked request now fails over instead of repeating the block.** The
   Anthropic gateway delivers its client-fingerprint refusal - "This request was
