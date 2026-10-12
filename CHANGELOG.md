@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **The codex / github-copilot account bridge is part of this package now.** `codex` and
+  `codex-<account>` providers used to come from a separate, unversioned extension in
+  `~/.pi/agent/extensions/codex-accounts` (written 2026-09-30), kept in step with this
+  package's store by hand and delivered by nothing. The three modules moved in as
+  `codex-shared.ts`, `codex-catalog.ts` and `codex-aliases.ts`, wired from `index.ts`, with
+  the regression moved to `test/docker/`. Same provider ids, same behaviour, one plugin.
+
+- **A codex login now reaches /model without a /reload.** The bridge built its alias list
+  only at `session_start` (and on its own command), so a login that landed while a session
+  was running — the normal case, since `/accounts` usually runs in another session and the
+  refresh sweep rewrites the same file — was invisible to that session: `/model` kept
+  showing nothing (reported 2026-10-13, "logged in codex, no models in the list"). The
+  store is watched now (directory watch, 200 ms debounce, 2 s poll belt, codex-slice
+  fingerprint) and re-synced on a real change; removal and an active-account switch are
+  followed too. Regression: `test/docker/run.sh`, four scenarios in a container, red with
+  the watch disabled and green with it.
+
 ## 0.8.31
 
 - **A block that hits every account now gets one more pass before the turn ends.**

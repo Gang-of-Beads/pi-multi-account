@@ -47,6 +47,7 @@ import { LocklessReadAccountStore } from "./account-store.ts";
 import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
+import { registerCodexAliasProviders } from "./codex-aliases.ts";
 import { registerBillingLayer } from "./billing.ts";
 import { registerAnthropicModels } from "./models.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
@@ -307,6 +308,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const aliases = registerAccountAliasProviders(pi, store);
 	await aliases.bootstrap();
 
+	// The same for Codex accounts (codex-aliases.ts): `codex` and `codex-<name>` clone
+	// pi's native provider so /accounts logins show up in /model.
+	const codexAliases = registerCodexAliasProviders(pi);
+	await codexAliases.bootstrap();
+
 	// Account manager with explicit re-login and rename (accounts-menu.ts).
 	registerAccountsCommandOverride(pi, store, providers, aliases, refreshLoop);
 
@@ -486,6 +492,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
 		}
 		try {
+			await codexAliases.sync(ctx);
+		} catch (error) {
+			console.error(`pi-multi-account: codex providers were not loaded: ${errorMessage(error)}`);
+		}
+		// Follow the store from here on: a /accounts login in another session, or a sweep
+		// rotation, must reach /model without a /reload.
+		codexAliases.watchStore(ctx);
+		try {
 			await poolSync.sync(ctx);
 		} catch (error) {
 			console.error(`pi-multi-account: aggregate pools were not loaded: ${errorMessage(error)}`);
@@ -572,5 +586,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// convinced that a run is still in flight.
 		releaseRun();
 		refreshLoop.stop();
+		codexAliases.stop();
 	});
 }
