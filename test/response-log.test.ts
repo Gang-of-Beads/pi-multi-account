@@ -80,3 +80,9 @@ test("the same error response is logged once", async () => {
 	assert.equal(lines.length, 1, "one request, one line");
 	assert.deepEqual(lines[0], { url: "https://api.anthropic.com/v1/messages", ms: 12, status: 529, body: "{\"error\":\"overloaded\"}" });
 });
+
+// A daemon loads one module instance per session, so the guard has to be shared.
+test("the dedupe guard lives on globalThis, not in module state", () => {
+	const shared = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-multi-account.loggedResponses")];
+	assert.ok(shared instanceof WeakSet, "a second module instance reaches the same set");
+});

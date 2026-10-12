@@ -10,8 +10,15 @@ type ResponseLogger = (event: string, fields: Record<string, unknown>) => void;
  * request was in the log twice, one line with `ms` and one without. The guard is
  * keyed on the Response itself, so the first wrapper to see it logs it and the
  * second stays quiet, whichever that turns out to be.
+ *
+ * The set hangs off a global symbol, not module state: a session daemon gives every
+ * session its own module instance, each of which patches the same global fetch, so a
+ * module-local guard would still let one request be logged once per live session.
  */
-const logged = new WeakSet<Response>();
+const LOGGED_KEY = Symbol.for("pi-multi-account.loggedResponses");
+const logHost = globalThis as unknown as Record<symbol, WeakSet<Response> | undefined>;
+if (logHost[LOGGED_KEY] === undefined) logHost[LOGGED_KEY] = new WeakSet<Response>();
+const logged = logHost[LOGGED_KEY]!;
 
 /**
  * Log one provider response without holding it back.
