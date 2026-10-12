@@ -86,6 +86,15 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	assert.match(system[0]!.text, /^x-anthropic-billing-header: cc_version=\d/);
 	assert.equal(system[1]!.text, identity, "the identity block stays after the billing header");
 
+	// The hook can see the same payload again; a second pass is a no-op.
+	const headerText = system[0]!.text;
+	assert.equal(
+		injectBillingHeader(payload),
+		undefined,
+		"a second injection on the same payload is skipped",
+	);
+	assert.equal(system[0]!.text, headerText, "the existing billing header is left untouched");
+
 	// Non-stealth payloads are skipped: no identity block, non-Claude model.
 	assert.equal(
 		injectBillingHeader({ model: "claude-haiku-4-5", system: [{ type: "text", text: "plain" }], messages: [] }),
@@ -150,7 +159,7 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	process.env[CLI_VERSION_MIN_ENV] = "2.0.0";
 	assert.equal(getCliVersion(), CC_VERSION, "an env floor below the pin loses instead of downgrading");
 
-	process.env[CLI_VERSION_MIN_ENV] = "not-a-version";
+	process.env[CLI_VERSION_MIN_ENV] = "9.9";
 	assert.equal(getCliVersion(), CC_VERSION, "a malformed env floor is ignored, not put on the wire");
 
 	process.env[CLI_VERSION_MIN_ENV] = "9.9.9";
@@ -158,7 +167,7 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	assert.equal(getCliVersion(), "9.9.11", "the highest floor wins");
 
 	delete process.env[CLI_VERSION_MIN_ENV];
-	rmSync(join(fakeBin, "claude"));
+	rmSync(fakeBin, { recursive: true });
 	process.env.PATH = savedPath;
 	resetClaudeVersionCache();
 }
