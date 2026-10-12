@@ -703,3 +703,66 @@ resetPoolsFileForTesting();
 
 assert.equal(unexpectedRefreshes, 0, "no test scenario should reach for a token refresh");
 console.log("ok: pool definitions, rotation order, failover, no-retry-after-content, disable switch");
+
+// The block tracks the request, not the credential: it hit both accounts inside one
+// request, so one pass ends a turn that a plain resend fixes. A second pass is taken.
+{
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([
+		{ status: 200, errorOnStream: "blocked" },
+		{ status: 200, errorOnStream: "blocked" },
+		{ status: 200, text: "hello from the second pass" },
+	]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
+	const registered = providers["team"]!;
+
+	const { events, result } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	assert.deepEqual(events.map((e) => e.type), ["start", "text_start", "done"]);
+	assert.equal((result as { content: Array<{ text?: string }> }).content[0]?.text, "hello from the second pass");
+	assert.equal(fake.requests.length, 3, "both accounts blocked, then one more pass answered");
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+// Both passes blocked: the error names each account once, and says it made two passes.
+{
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([
+		{ status: 200, errorOnStream: "blocked" },
+		{ status: 200, errorOnStream: "blocked" },
+		{ status: 200, errorOnStream: "blocked" },
+		{ status: 200, errorOnStream: "blocked" },
+	]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
+	const registered = providers["team"]!;
+
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const message = (events.find((e) => e.type === "error") as { error?: { errorMessage?: string } }).error?.errorMessage ?? "";
+	assert.equal(fake.requests.length, 4, "two passes over two accounts, then it reports");
+	assert.match(message, /tried 2 account\(s\) in 2 passes/, "two accounts, not four");
+	assert.match(message, /"personal" → 200/);
+	assert.match(message, /"work" → 200/);
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+// A 400 is a request problem, not an account one: it does not even fail over.
+{
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([{ status: 400 }, { status: 400 }, { status: 200, text: "never used" }]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
+	const registered = providers["team"]!;
+	await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	assert.equal(fake.requests.length, 1, "a 400 is not worth another account, so one pass and no retry");
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();

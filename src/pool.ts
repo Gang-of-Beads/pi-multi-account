@@ -70,6 +70,17 @@ type ProviderState = Awaited<ReturnType<AccountStore["readProviderAsync"]>>;
 /** Statuses that are worth trying a different account for. */
 const FAILOVER_STATUSES = new Set([401, 403, 408, 429, 500, 502, 503, 504, 529]);
 
+/**
+ * How many times the account list is walked before the request is reported failed.
+ *
+ * The gateway's client-fingerprint block arrives as a 200 whose stream dies before any
+ * content, and it hit *both* pool accounts inside one request - the block tracks the
+ * request (its content), not the credential - so one pass can end a turn that a plain
+ * resend fixes: 5 blocks in 68 requests, and the resend right after succeeded. A second
+ * pass costs one more request and is only taken while nothing has streamed.
+ */
+const MAX_PASSES = 2;
+
 export interface PoolNotice {
 	message: string;
 	level: "info" | "warning" | "error";
@@ -427,7 +438,11 @@ export function createPoolRuntime(
 			// message like `503 {"message":"Upstream timeout"}`, which cannot
 			// answer "which account, why" without it.
 			const tried: Array<{ account: string; status: number | undefined; detail: string }> = [];
-			for (let index = 0; index < accounts.length; index += 1) {
+			let lastReason: FailoverReason | undefined;
+			let passes = 0;
+			for (;;) {
+				passes += 1;
+				for (let index = 0; index < accounts.length; index += 1) {
 				const accountName = accounts[index]!;
 				if (signal?.aborted) break;
 				const credential = await resolveAccount(accountName, signal, definition.name);
@@ -531,6 +546,7 @@ export function createPoolRuntime(
 				}
 				lastFailure = failure;
 				const reason = failoverReason(errorStatus)!;
+				lastReason = reason;
 				const next = accounts[index + 1];
 				// Move the rotation on, so the next request starts at the account
 				// this one is about to try instead of failing here again.
@@ -557,6 +573,11 @@ export function createPoolRuntime(
 				});
 			}
 
+			if (signal?.aborted) break;
+			if (passes >= MAX_PASSES || lastReason !== "stream-error" || lastFailure === undefined) break;
+			logInfo("pool.retry_pass", { pool: definition.name, pass: passes + 1, accounts: accounts.length });
+		}
+
 			// Every account failed (or none could resolve). Report the last real
 			// provider error, or an honest summary when none ever got that far.
 			// An aborted loop reports the abort, not a pool-wide failure, even
@@ -570,11 +591,15 @@ export function createPoolRuntime(
 				// Append the per-account breakdown: the raw provider error alone
 				// ("503 Upstream timeout") cannot show whether one account or the
 				// whole pool is down, which is the first question anyone asks.
-				const trace = tried
+				// One line per account with the last thing it answered: a second pass
+				// must not read as twice the accounts.
+				const perAccount = [...new Map(tried.map((t) => [t.account, t])).values()];
+				const trace = perAccount
 					.map((t) => `"${t.account}" → ${t.status ?? "error"}${t.detail ? `: ${t.detail.slice(0, 120)}` : ""}`)
 					.join("; ");
 				const body = (lastFailure as { error?: { errorMessage?: string } }).error?.errorMessage ?? "";
-				outer.push(errorEvent(`${body}\n\npi-multi-account: pool "${definition.name}" tried ${tried.length} account(s): ${trace}.`));
+				const walked = passes > 1 ? ` in ${passes} passes` : "";
+				outer.push(errorEvent(`${body}\n\npi-multi-account: pool "${definition.name}" tried ${perAccount.length} account(s)${walked}: ${trace}.`));
 				outer.end();
 				return;
 			}
