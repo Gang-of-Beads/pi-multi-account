@@ -216,6 +216,23 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 		liveCtx = undefined;
 	}
 
+	// Escape hatch, kept from the standalone extension: the watch makes it rarely needed,
+	// but a manual refresh is the first thing to reach for when /model looks wrong.
+	pi.registerCommand("codex-account-providers", {
+		description: "Refresh the codex-account providers shown by /model",
+		handler: async (_args, ctx) => {
+			await sync(ctx);
+			const ids = ctx.modelRegistry
+				.getRegisteredProviderIds()
+				.filter((id) => id === ACTIVE_ALIAS_ID || id.startsWith(ALIAS_PREFIX))
+				.sort();
+			ctx.ui.notify(
+				ids.length > 0 ? `Codex providers: ${ids.join(", ")}` : "No codex accounts found — add one with /accounts.",
+				"info",
+			);
+		},
+	});
+
 	return {
 		bootstrap: async () => {
 			for (const id of wantedIds(readCodexState())) registerAlias(id);
