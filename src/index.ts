@@ -115,8 +115,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (typeof globalFetch === "function" && marker.__pmaWrapped !== true) {
 			const wrapped = async (input: unknown, init?: unknown): Promise<unknown> => {
 				const url = typeof input === "string" ? input : String((input as { url?: string } | undefined)?.url ?? input);
+				const started = Date.now();
 				const response = await (globalFetch as (a: unknown, b?: unknown) => Promise<unknown>).call(globalThis, input, init);
-				if (url.includes("api.anthropic.com") && response instanceof Response) logProviderResponse(response, { url: url.replace(/\?.*/u, "") });
+				if (url.includes("api.anthropic.com") && response instanceof Response) {
+					logProviderResponse(response, { url: url.replace(/\?.*/u, ""), ms: Date.now() - started });
+				}
 				return response;
 			};
 			Object.assign(wrapped, { __pmaWrapped: true });
@@ -179,7 +182,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const isPool = isPoolProvider(providerId);
 		if (!isPool && providerId !== "anthropic" && !providerId.startsWith(ALIAS_PREFIX)) return;
 		if (event.status < 400) {
-			logDebug("response.ok", { provider: providerId, status: event.status });
+			// Only the status is known when the headers arrive: a 2xx can still fail on the
+			// body, which is exactly how the gateway reports its client-fingerprint block.
+			// The stream outcome is logged where it happens, as `pool.failover` with a
+			// reason, so this event is named for the status rather than for "ok".
+			logDebug("response.status", { provider: providerId, status: event.status });
 		} else {
 			void (async () => {
 				try {

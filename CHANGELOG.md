@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Every Anthropic request was in the diagnostic log twice.** Two fetch wrappers
+  can see the same request - the global guard and the one attached to a prepared
+  request - and each logged its own line, one with `ms` and one without, so the
+  log read as twice the traffic and the pair was easy to misread as two attempts.
+  Logging is now keyed on the response itself: the first wrapper to see it logs
+  it, the second stays quiet, and both carry `ms` so the surviving line is the
+  same either way.
+
+- The debug event for an arriving response is called `response.status`, not
+  `response.ok`. Only the status is known when the headers arrive, and a 2xx can
+  still fail on the body - which is exactly how the gateway delivers its
+  client-fingerprint block, so "ok" was naming a state the extension had not seen
+  yet. The stream outcome is logged where it happens, as `pool.failover` with a
+  reason.
+
 ## 0.8.26
 
 - **A blocked request now fails over instead of repeating the block.** The

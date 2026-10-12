@@ -3,6 +3,17 @@ import { logInfo } from "./debug-log.ts";
 type ResponseLogger = (event: string, fields: Record<string, unknown>) => void;
 
 /**
+ * Which responses already have a log line.
+ *
+ * Two wrappers can see the same request - the global fetch guard and the one
+ * attached to a prepared request - and each logged its own line for it, so every
+ * request was in the log twice, one line with `ms` and one without. The guard is
+ * keyed on the Response itself, so the first wrapper to see it logs it and the
+ * second stays quiet, whichever that turns out to be.
+ */
+const logged = new WeakSet<Response>();
+
+/**
  * Log one provider response without holding it back.
  *
  * Both diagnostic fetch wrappers awaited the clone's text before returning the response, which reads
@@ -12,6 +23,8 @@ type ResponseLogger = (event: string, fields: Record<string, unknown>) => void;
  * time only; an error body, small and complete, is read from a clone in the background.
  */
 export function logProviderResponse(response: Response, fields: Record<string, unknown>, log: ResponseLogger = logInfo): void {
+	if (logged.has(response)) return;
+	logged.add(response);
 	const entry = { ...fields, status: response.status };
 	if (response.ok) {
 		log("diag.http", entry);
