@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.32
 
 - **The codex / github-copilot account bridge is part of this package now.** `codex` and
   `codex-<account>` providers used to come from a separate, unversioned extension in
