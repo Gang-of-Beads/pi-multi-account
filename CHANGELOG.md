@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The claimed Claude Code version is the highest of three floors, and nothing
+  can lower it.** The pin, `ANTHROPIC_CLI_VERSION_MIN`, and a locally installed
+  `claude --version` are all floors; the highest wins, and a malformed env value
+  is dropped instead of sent. `ANTHROPIC_CLI_VERSION` becomes
+  `ANTHROPIC_CLI_VERSION_MIN` because it was never an override - a value below
+  the pin or below a local claude silently lost, which a name without `MIN` did
+  not say. The pin moves too, to the latest published release: claude-opus-5-5
+  answers any claim under 2.1.280 with `claude_code_version_too_old`, and the
+  previous 2.1.251 was under it - only a machine with its own newer `claude`
+  kept that model reachable. The billing test asserted the old literal, so it
+  failed on exactly those machines.
+
 - A request you stop ends as stopped again. The pool re-reported an abort as
   the serving account's error, with the account attached, so a Stop read as a
   provider failure (PI WEB: "The model provider returned an error") and the

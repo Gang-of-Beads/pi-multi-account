@@ -20,6 +20,7 @@ import {
 	buildBillingHeaderValue,
 	buildUserAgent,
 	CC_VERSION,
+	CLI_VERSION_MIN_ENV,
 	getCliVersion,
 	injectBillingHeader,
 	registerBillingLayer,
@@ -103,52 +104,62 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	const pristineMessages = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
 	assert.equal(
 		system[0]!.text,
-		buildBillingHeaderValue(pristineMessages as never, "2.1.251", "sdk-cli"),
+		buildBillingHeaderValue(pristineMessages as never, getCliVersion(), "sdk-cli"),
 		"the injected header matches buildBillingHeaderValue for the same input",
 	);
 }
 
-// Version resolution: env override > detected local claude > pinned fallback.
+// Version resolution: every source is a floor, and the highest one is claimed.
 {
 	resetClaudeVersionCache();
 	const fakeBin = makeDir();
-	writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\necho \"2.3.4 (Claude Code)\"\n", {
-		mode: 0o755,
-	});
-	const withPath = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
-
-	// No env, fake claude on PATH -> the detected version wins.
-	delete process.env.ANTHROPIC_CLI_VERSION;
 	const savedPath = process.env.PATH;
+	const claudeOnPath = (version: string): void => {
+		writeFileSync(join(fakeBin, "claude"), `#!/bin/sh\necho "${version} (Claude Code)"\n`, {
+			mode: 0o755,
+		});
+		resetClaudeVersionCache();
+	};
+
+	delete process.env[CLI_VERSION_MIN_ENV];
+
+	// No claude on PATH: the pin is the claim.
+	process.env.PATH = fakeBin;
+	resetClaudeVersionCache();
+	assert.equal(getCliVersion(), CC_VERSION, "without a local claude the pin is the claim");
+
+	// A newer local claude raises it.
 	process.env.PATH = `${fakeBin}:${savedPath}`;
-	assert.equal(getCliVersion(), "2.3.4", "a locally installed claude is auto-detected");
+	claudeOnPath("9.9.9");
+	assert.equal(getCliVersion(), "9.9.9", "a newer local claude raises the claim");
 
 	// Memoized: a second call must not re-probe (remove the fake and check).
 	rmSync(join(fakeBin, "claude"));
-	assert.equal(getCliVersion(), "2.3.4", "the probe result is memoized");
+	assert.equal(getCliVersion(), "9.9.9", "the probe result is memoized");
 
-	// An outdated local claude must not lower the claimed version: the gateway
-	// enforces a per-model minimum (claude_code_version_too_old).
-	writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\necho \"2.1.217 (Claude Code)\"\n", {
-		mode: 0o755,
-	});
-	resetClaudeVersionCache();
-	assert.equal(getCliVersion(), CC_VERSION, "an older local claude does not downgrade the pin");
+	// An outdated local claude must not lower the claim: the gateway enforces a
+	// per-model minimum (claude_code_version_too_old).
+	claudeOnPath("2.1.217");
+	assert.equal(getCliVersion(), CC_VERSION, "an older local claude does not lower the claim");
+
+	// The env floor raises the claim, and only raises it.
 	rmSync(join(fakeBin, "claude"));
+	process.env[CLI_VERSION_MIN_ENV] = "9.9.10";
+	assert.equal(getCliVersion(), "9.9.10", "the env floor raises the claim above the pin");
 
-	// Env override beats everything.
-	process.env.ANTHROPIC_CLI_VERSION = "9.9.9";
-	resetClaudeVersionCache();
-	assert.equal(getCliVersion(), "9.9.9", "ANTHROPIC_CLI_VERSION wins over detection");
+	process.env[CLI_VERSION_MIN_ENV] = "2.0.0";
+	assert.equal(getCliVersion(), CC_VERSION, "an env floor below the pin loses instead of downgrading");
 
-	// No env, no claude on PATH -> pinned fallback.
-	delete process.env.ANTHROPIC_CLI_VERSION;
-	process.env.PATH = `${fakeBin}`; // nothing else findable
-	resetClaudeVersionCache();
-	assert.equal(getCliVersion(), CC_VERSION, "without a local claude the fallback applies");
+	process.env[CLI_VERSION_MIN_ENV] = "not-a-version";
+	assert.equal(getCliVersion(), CC_VERSION, "a malformed env floor is ignored, not put on the wire");
 
+	process.env[CLI_VERSION_MIN_ENV] = "9.9.9";
+	claudeOnPath("9.9.11");
+	assert.equal(getCliVersion(), "9.9.11", "the highest floor wins");
+
+	delete process.env[CLI_VERSION_MIN_ENV];
+	rmSync(join(fakeBin, "claude"));
 	process.env.PATH = savedPath;
-	rmSync(fakeBin, { recursive: true });
 	resetClaudeVersionCache();
 }
 

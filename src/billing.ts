@@ -20,17 +20,33 @@ import { errorMessage } from "./errors.ts";
 
 const BILLING_SALT = "59cf53e54c78";
 
-// Claude Code CLI version used for the billing header AND the overridden
-// user-agent. The billing header's cc_version must match the user-agent
-// version for Anthropic's subscription-billing validation to route the request
-// to the Claude Pro/Max plan. Overridable via ANTHROPIC_CLI_VERSION.
+// Lowest Claude Code CLI version this extension will ever claim, in the billing
+// header's cc_version AND the overridden user-agent. The two must agree for
+// Anthropic's subscription-billing validation to route the request to the
+// Claude Pro/Max plan.
 //
-// Kept in step with the actively maintained opencode-claude-auth
-// (griffinmartin) model-config: a stale version string is one of the
-// client-fingerprint signals Anthropic's "reverse engineering or duplicating
-// model outputs" enforcement keys on (see opencode-claude-auth #188 and
-// opencode-anthropic-auth #80, Apr 2026). Bump when that project bumps.
-export const CC_VERSION = "2.1.251";
+// Every source is a floor, so the highest one applies. The gateway enforces a
+// per-model client minimum (claude-opus-5-5 answers a lower claim with
+// claude_code_version_too_old: "version 2.1.280 or newer is required"), so a
+// claim below the model's minimum cannot reach it at all.
+//
+// Kept at the latest published @anthropic-ai/claude-code release, following the
+// actively maintained opencode-claude-auth (griffinmartin) model-config: a stale
+// version string is also one of the client-fingerprint signals Anthropic's
+// "reverse engineering or duplicating model outputs" enforcement keys on (see
+// opencode-claude-auth #188 and opencode-anthropic-auth #80, Apr 2026). Bump
+// when a release lands.
+export const CC_VERSION = "2.1.296";
+
+/**
+ * Raise the claimed version without waiting for a release.
+ *
+ * Named MIN because it is a floor, not an override: a value below the pin or
+ * below a locally installed claude is not a downgrade request, it is a floor
+ * that lost. `ANTHROPIC_USER_AGENT` remains the way to claim an exact
+ * user-agent string.
+ */
+export const CLI_VERSION_MIN_ENV = "ANTHROPIC_CLI_VERSION_MIN";
 
 // Billing entrypoint, mirrored in the user-agent's `(external, <entrypoint>)`
 // suffix. Overridable via CLAUDE_CODE_ENTRYPOINT.
@@ -45,10 +61,10 @@ let detectedClaudeVersion: string | undefined | null = null;
  * Version of a locally installed Claude Code CLI, if one exists.
  *
  * A real install is the best version source there is: the gateway checks the
- * claimed version against a per-model minimum (fable-5-1 rejects < 2.1.251
+ * claimed version against a per-model minimum (claude-opus-5-5 rejects < 2.1.280
  * with claude_code_version_too_old), and a machine with the genuine CLI has a
  * version the gateway certainly accepts. No CLI on PATH, or a probe that
- * misbehaves, resolves to undefined and the fallback applies.
+ * misbehaves, resolves to undefined and the pin applies.
  */
 export function detectClaudeVersion(): string | undefined {
 	if (detectedClaudeVersion !== null) return detectedClaudeVersion;
@@ -82,21 +98,30 @@ function compareVersions(a: string, b: string): number {
 	return 0;
 }
 
+/** A claim worth putting on the wire: dotted numbers, optional pre-release suffix. */
+export function isCliVersion(value: string | undefined): value is string {
+	return value !== undefined && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value);
+}
+
 /**
- * Resolve the Claude Code CLI version. Env override wins (the user may need an
- * exact string), then the newer of a locally installed claude and the pinned
- * minimum.
+ * The version to claim: the highest floor that applies.
  *
- * The detected version must never *lower* the claimed version: the gateway
- * enforces a per-model minimum, so a machine with an outdated claude on PATH
- * would otherwise fail every request on a newer model with
- * `claude_code_version_too_old` — a local install older than the pin is exactly
- * the case where the pin is the better claim.
+ * No source can lower another, so an outdated local claude, a stale env floor or
+ * a lagging pin only loses a comparison instead of dragging the claim below a
+ * model's minimum. A malformed floor is dropped rather than put on the wire.
  */
+export function claimedCliVersion(...floors: Array<string | undefined>): string {
+	return floors
+		.filter(isCliVersion)
+		.reduce(
+			(highest, candidate) => (compareVersions(candidate, highest) > 0 ? candidate : highest),
+			CC_VERSION,
+		);
+}
+
+/** Resolve the claimed version: the pin, `ANTHROPIC_CLI_VERSION_MIN`, and a local claude. */
 export function getCliVersion(): string {
-	if (process.env.ANTHROPIC_CLI_VERSION) return process.env.ANTHROPIC_CLI_VERSION;
-	const detected = detectClaudeVersion();
-	return detected && compareVersions(detected, CC_VERSION) > 0 ? detected : CC_VERSION;
+	return claimedCliVersion(process.env[CLI_VERSION_MIN_ENV], detectClaudeVersion());
 }
 
 /** Resolve the billing entrypoint (env override wins). */
