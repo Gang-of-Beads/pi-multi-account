@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- **A block that hits every account now gets one more pass before the turn ends.**
+  The gateway's client-fingerprint block tracks the request, not the credential: a
+  live capture shows it hitting *both* pool accounts inside one request (the pool
+  failed over personal to work, then the error named "work"), after which the pool
+  reported and the turn ended - while a plain resend right after succeeded. After a
+  full pass in which every account failed with a stream error and nothing had
+  streamed, the pool walks its accounts once more, bounded at two passes. The
+  exhausted breakdown still names each account once and now says how many passes it
+  made, and a retry is logged as `pool.retry_pass`.
+
+- The non-eligible path logs `pool.rejected` (status, classifier reason, whether
+  anything had streamed, pool size). It logged nothing before, so "the pool refused
+  to fail over" and "the pool never ran" were indistinguishable in the log.
+
+- The diagnostic log line per provider response is now one line, not two. The pair
+  was two module instances - a session daemon loads one per session, and each one
+  patches the same global fetch (the two runtime ids in one pid gave it away, and
+  `Symbol.for` did not share across the realms jiti evaluates them in) - so the
+  guard lives on a global string key.
+
+- `response.ok` became `response.status` in the debug log: only the status is known
+  when the headers arrive, and a 2xx can still fail on the body.
+
 ## 0.8.27
 
 - **Every Anthropic request was in the diagnostic log twice.** Two fetch wrappers
