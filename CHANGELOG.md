@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.27
 
 - **Every Anthropic request was in the diagnostic log twice.** Two fetch wrappers
   can see the same request - the global guard and the one attached to a prepared
