@@ -15,8 +15,8 @@ type ResponseLogger = (event: string, fields: Record<string, unknown>) => void;
  * session its own module instance, each of which patches the same global fetch, so a
  * module-local guard would still let one request be logged once per live session.
  */
-const LOGGED_KEY = Symbol.for("pi-multi-account.loggedResponses");
-const logHost = globalThis as unknown as Record<symbol, WeakSet<Response> | undefined>;
+const LOGGED_KEY = "__piMultiAccountLoggedResponses";
+const logHost = globalThis as unknown as Record<string, WeakSet<Response> | undefined>;
 if (logHost[LOGGED_KEY] === undefined) logHost[LOGGED_KEY] = new WeakSet<Response>();
 const logged = logHost[LOGGED_KEY]!;
 

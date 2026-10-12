@@ -83,6 +83,8 @@ test("the same error response is logged once", async () => {
 
 // A daemon loads one module instance per session, so the guard has to be shared.
 test("the dedupe guard lives on globalThis, not in module state", () => {
-	const shared = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-multi-account.loggedResponses")];
+	const shared = (globalThis as Record<string, unknown>)["__piMultiAccountLoggedResponses"];
 	assert.ok(shared instanceof WeakSet, "a second module instance reaches the same set");
+	// Symbol.for is per realm and jiti evaluates a second instance elsewhere, so a string key
+	// is what actually shares; the probe caught it: 2 lines stayed 2 with a symbol key.
 });
