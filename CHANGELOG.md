@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **The claimed version and the user-agent can no longer disagree.** The module
+  has always required them to match; `ANTHROPIC_USER_AGENT` was the one way to
+  break that, because it replaced the user-agent verbatim while `cc_version`
+  kept coming from the floors. The version the user-agent names now *is*
+  cc_version, and a user-agent that names no `claude-cli/<version>` leaves the
+  floors in charge. The version shape has one definition instead of two copies,
+  so the local `claude --version` probe and the validator cannot drift apart.
+
+- The billing test now pins what it previously took on faith: the user-agent and
+  `cc_version` must name the same version, the header format has a literal
+  expectation that does not depend on this machine's `claude`, the floor policy
+  is asserted pure, and the pin is checked against the 2.1.280 model minimum the
+  incident came from. Six mutations (each of the above, plus the idempotency
+  guard and the malformed-floor filter) were confirmed to turn it red.
+
 - **The claimed Claude Code version is the highest of three floors, and nothing
   can lower it.** The pin, `ANTHROPIC_CLI_VERSION_MIN`, and a locally installed
   `claude --version` are all floors; the highest wins, and a malformed env value

@@ -20,12 +20,21 @@ import {
 	buildBillingHeaderValue,
 	buildUserAgent,
 	CC_VERSION,
+	claimedCliVersion,
 	CLI_VERSION_MIN_ENV,
 	getCliVersion,
+	getEntrypoint,
 	injectBillingHeader,
+	isCliVersion,
 	registerBillingLayer,
 	resetClaudeVersionCache,
+	versionInUserAgent,
 } from "../src/billing.ts";
+
+// A developer's own ANTHROPIC_USER_AGENT would decide both the UA and the
+// claimed version; clear it so every assertion here is deterministic.
+const savedUserAgent = process.env.ANTHROPIC_USER_AGENT;
+delete process.env.ANTHROPIC_USER_AGENT;
 
 const FULL_UA = buildUserAgent();
 
@@ -80,11 +89,29 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 		messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
 	};
 
+	// A floor above the pin so the resolved version provably differs from
+	// CC_VERSION; otherwise on a claude-less box getCliVersion()===CC_VERSION
+	// and a header hardcoding the pin is indistinguishable from the resolver.
+	process.env[CLI_VERSION_MIN_ENV] = "99.0.0";
+
 	const first = injectBillingHeader(payload);
 	assert.ok(first, "a stealth payload gets the billing header");
 	const system = first!.system as Array<{ text: string }>;
 	assert.match(system[0]!.text, /^x-anthropic-billing-header: cc_version=\d/);
 	assert.equal(system[1]!.text, identity, "the identity block stays after the billing header");
+
+	// The billing header and the user-agent must claim the same resolved
+	// version; that agreement is the point of the whole layer. The floor above
+	// moves the resolved version off the pin, so either side falling back to
+	// CC_VERSION fails here.
+	const claimed = /cc_version=([^;]+)/.exec(system[0]!.text)?.[1]?.replace(/\.[0-9a-f]{3}$/, "");
+	assert.equal(claimed, getCliVersion(), "the header claims the resolved version");
+	assert.notEqual(getCliVersion(), CC_VERSION, "the injected floor moves the claim off the pin");
+	assert.equal(
+		buildUserAgent(),
+		`claude-cli/${claimed} (external, ${getEntrypoint()})`,
+		"the user-agent claims the same version as cc_version",
+	);
 
 	// The hook can see the same payload again; a second pass is a no-op.
 	const headerText = system[0]!.text;
@@ -116,6 +143,15 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 		buildBillingHeaderValue(pristineMessages as never, getCliVersion(), "sdk-cli"),
 		"the injected header matches buildBillingHeaderValue for the same input",
 	);
+
+	// The format itself is pinned, independent of this machine's claude.
+	assert.match(
+		buildBillingHeaderValue(pristineMessages as never, "2.1.300", "sdk-cli"),
+		/^x-anthropic-billing-header: cc_version=2\.1\.300\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=[0-9a-f]{5};$/,
+		"a known version formats as cc_version=<version>.<suffix> with a cch",
+	);
+
+	delete process.env[CLI_VERSION_MIN_ENV];
 }
 
 // Version resolution: every source is a floor, and the highest one is claimed.
@@ -131,6 +167,24 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	};
 
 	delete process.env[CLI_VERSION_MIN_ENV];
+
+	// The floor policy is pure: the highest valid floor wins, garbage is dropped.
+	assert.equal(claimedCliVersion(), CC_VERSION, "no floor beats the pin");
+	assert.equal(claimedCliVersion("1.0.0", "9.9.8"), "9.9.8", "the highest floor wins");
+	assert.equal(claimedCliVersion("9.9", "junk"), CC_VERSION, "only wire-shaped floors count");
+	assert.equal(isCliVersion("2.1.296"), true);
+	assert.equal(isCliVersion("2.1"), false, "two components is not a version we send");
+	assert.equal(versionInUserAgent("claude-cli/9.9.9 (external, cli)"), "9.9.9");
+	assert.equal(versionInUserAgent("node"), undefined, "a UA naming no version decides nothing");
+
+	// An independent literal for the pin: the gateway answers anything under
+	// 2.1.280 for claude-opus-5-5 with claude_code_version_too_old, which is the
+	// incident this whole module exists for. A pin that drops below it fails here.
+	const [major, minor, patch] = CC_VERSION.split(".").map(Number);
+	assert.ok(
+		major! * 1_000_000 + minor! * 1_000 + patch! >= 2_001_280,
+		`CC_VERSION ${CC_VERSION} is below the 2.1.280 model minimum`,
+	);
 
 	// No claude on PATH: the pin is the claim.
 	process.env.PATH = fakeBin;
@@ -166,6 +220,23 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	claudeOnPath("9.9.11");
 	assert.equal(getCliVersion(), "9.9.11", "the highest floor wins");
 
+	// An exact user-agent is the last word, and cc_version follows it: an
+	// override that names a version cannot desync the two.
+	process.env.ANTHROPIC_USER_AGENT = "claude-cli/9.9.12 (external, cli)";
+	assert.equal(getCliVersion(), "9.9.12", "an exact user-agent fixes the claimed version");
+	assert.equal(buildUserAgent(), "claude-cli/9.9.12 (external, cli)");
+	assert.equal(versionInUserAgent(buildUserAgent()), getCliVersion(), "the UA and cc_version agree");
+
+	// A user-agent that names no claude-cli version leaves the floors in charge.
+	process.env.ANTHROPIC_USER_AGENT = "my-agent/1.0";
+	assert.equal(getCliVersion(), "9.9.11", "the floors still decide");
+	assert.equal(buildUserAgent(), "my-agent/1.0", "a no-version override passes through verbatim");
+	assert.ok(
+		versionInUserAgent(buildUserAgent()) !== getCliVersion(),
+		"a no-version override leaves cc_version on the floors",
+	);
+	delete process.env.ANTHROPIC_USER_AGENT;
+
 	delete process.env[CLI_VERSION_MIN_ENV];
 	rmSync(fakeBin, { recursive: true });
 	process.env.PATH = savedPath;
@@ -176,4 +247,6 @@ function makeDir(): string {
 	return mkdtempSync(join(tmpdir(), "pi-ma-test-"));
 }
 
-console.log("ok: UA override in place, gating and idempotency, billing header injection");
+if (savedUserAgent !== undefined) process.env.ANTHROPIC_USER_AGENT = savedUserAgent;
+
+console.log("ok: UA override in place, gating and idempotency, version floors, header format");

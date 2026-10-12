@@ -43,8 +43,9 @@ export const CC_VERSION = "2.1.296";
  *
  * Named MIN because it is a floor, not an override: a value below the pin or
  * below a locally installed claude is not a downgrade request, it is a floor
- * that lost. `ANTHROPIC_USER_AGENT` remains the way to claim an exact
- * user-agent string.
+ * that lost. Set `ANTHROPIC_USER_AGENT` instead when the user-agent string
+ * itself matters; the version it names then becomes cc_version too, so the two
+ * cannot disagree.
  */
 export const CLI_VERSION_MIN_ENV = "ANTHROPIC_CLI_VERSION_MIN";
 
@@ -56,6 +57,13 @@ export const CC_ENTRYPOINT = "sdk-cli";
 // getCliVersion() runs on every request and a `claude --version` spawn per
 // request would be absurd.
 let detectedClaudeVersion: string | undefined | null = null;
+
+/** The wire shape of a claimed version: dotted numbers, optional pre-release suffix. */
+const CLI_VERSION_SHAPE = "\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?";
+
+/** One source for that shape, so the probe and the validator cannot drift apart. */
+const CLI_VERSION_EXACT = new RegExp(`^${CLI_VERSION_SHAPE}$`);
+const CLI_VERSION_IN_TEXT = new RegExp(`\\b(${CLI_VERSION_SHAPE})`);
 
 /**
  * Version of a locally installed Claude Code CLI, if one exists.
@@ -73,7 +81,7 @@ export function detectClaudeVersion(): string | undefined {
 			timeout: 3000,
 			encoding: "utf8",
 		});
-		detectedClaudeVersion = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(out)?.[1];
+		detectedClaudeVersion = CLI_VERSION_IN_TEXT.exec(out)?.[1];
 	} catch {
 		detectedClaudeVersion = undefined;
 	}
@@ -98,9 +106,9 @@ function compareVersions(a: string, b: string): number {
 	return 0;
 }
 
-/** A claim worth putting on the wire: dotted numbers, optional pre-release suffix. */
+/** A claim worth putting on the wire. */
 export function isCliVersion(value: string | undefined): value is string {
-	return value !== undefined && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value);
+	return value !== undefined && CLI_VERSION_EXACT.test(value);
 }
 
 /**
@@ -119,9 +127,26 @@ export function claimedCliVersion(...floors: Array<string | undefined>): string 
 		);
 }
 
-/** Resolve the claimed version: the pin, `ANTHROPIC_CLI_VERSION_MIN`, and a local claude. */
+/** The version a complete user-agent override names, if it names one. */
+export function versionInUserAgent(userAgent: string | undefined): string | undefined {
+	if (!userAgent) return undefined;
+	const named = /\bclaude-cli\/([^\s(]+)/.exec(userAgent)?.[1];
+	return isCliVersion(named) ? named : undefined;
+}
+
+/**
+ * Resolve the claimed version.
+ *
+ * `ANTHROPIC_USER_AGENT` wins outright: it already fixes the user-agent string,
+ * and the billing header's cc_version has to agree with it. Otherwise the pin,
+ * `ANTHROPIC_CLI_VERSION_MIN` and a local claude are all floors and the highest
+ * one is claimed.
+ */
 export function getCliVersion(): string {
-	return claimedCliVersion(process.env[CLI_VERSION_MIN_ENV], detectClaudeVersion());
+	return (
+		versionInUserAgent(process.env.ANTHROPIC_USER_AGENT) ??
+		claimedCliVersion(process.env[CLI_VERSION_MIN_ENV], detectClaudeVersion())
+	);
 }
 
 /** Resolve the billing entrypoint (env override wins). */
@@ -357,13 +382,13 @@ export function registerBillingLayer(pi: ExtensionAPI): void {
  * requests pass through untouched, and an already-current UA is left alone
  * so the override is idempotent.
  *
- * Callers must invoke this from a request-time fetch wrapper (the pool's and
- * the aliases' captureFetch), NOT from `before_provider_headers`: at that
- * hook pi-ai has not merged its own UA yet (the headers object carries only
- * caller/model-level headers), and the event carries no provider id, so an
- * unconditional rewrite there would also clobber API-key, Copilot and Codex
- * requests. The fetch wrapper runs after the SDK's full header merge and is
- * scoped to exactly the OAuth requests this extension authenticates.
+ * Callers use this from a request-time fetch wrapper (the pool's and the
+ * aliases' captureFetch) rather than from `before_provider_headers`: that hook
+ * runs before the SDK's header merge, so on the pooled providers it sees an
+ * empty header object and has nothing to rewrite - only the native `anthropic`
+ * hook sees a UA there, and it checks `ctx.model.provider` itself. The fetch
+ * wrapper runs after the merge and is scoped to exactly the OAuth requests this
+ * extension authenticates.
  */
 export function applyUserAgentOverride(headers: Headers): void {
 	const ua = headers.get("user-agent");
