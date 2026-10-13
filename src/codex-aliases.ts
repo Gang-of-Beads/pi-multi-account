@@ -164,8 +164,8 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 
 	/**
 	 * Fetch the catalog of every stored account (or only those `known` has no catalog for) and
-	 * remember the fresh ones for the next load. A failure keeps the base windows and says so; an
-	 * account the token policy declines is left to a later fetch.
+	 * remember the fresh ones for the next load. A failure keeps the cached or base windows and says
+	 * so; an account the token policy declines is left to a later fetch.
 	 */
 	async function fetchCatalogs(
 		warn: (message: string) => void,
@@ -188,7 +188,7 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 					const catalog = await fetchContextCatalog(access, fetch, options.timeoutMs);
 					catalogs.set(catalog.accountId, catalog);
 				} catch (error) {
-					warn(`Codex account "${found.name}": using base context windows; ${errorDetail(error)}`);
+					warn(`Codex account "${found.name}": using cached or base context windows; ${errorDetail(error)}`);
 				}
 			}),
 		);
@@ -205,7 +205,9 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 		}
 		const generation = ++syncGeneration;
 		sweepStaleAliases(ctx, wantedIds(readCodexState()));
-		const catalogs = await fetchCatalogs((message) => ctx.ui.notify(message, "warning"), tokenAfterSweep);
+		const fetched = await fetchCatalogs((message) => ctx.ui.notify(message, "warning"), tokenAfterSweep);
+		// Offline or a failed fetch keeps the cached windows bootstrap registered instead of reverting to 272k.
+		const catalogs = new Map([...readCachedCatalogs(), ...fetched]);
 		// A second sync may have started while the catalogs were in flight; only the newest
 		// one may register, or a slow stale fetch would overwrite fresher metadata.
 		if (generation !== syncGeneration) return;

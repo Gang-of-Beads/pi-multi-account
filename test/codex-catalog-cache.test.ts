@@ -96,7 +96,8 @@ function token(accountId: string): string {
 		unregisterProvider: (id: string) => registered.delete(id),
 		registerCommand: () => undefined,
 	};
-	await registerCodexAliasProviders(pi as never).bootstrap();
+	const registry = registerCodexAliasProviders(pi as never);
+	await registry.bootstrap();
 	globalThis.fetch = realFetch;
 
 	const windowOf = (id: string) => registered.get(id)?.getModels().find((model) => model.id === "gpt-6.1-sol")?.contextWindow;
@@ -107,6 +108,51 @@ function token(accountId: string): string {
 	assert.notEqual(windowOf("codex-expiring"), 872000, "an expiring account keeps the base window until a later sync");
 	assert.ok(readCachedCatalogs(catalogCacheFile()).has("acct-fresh"), "the fetched catalog is cached for the next load");
 	assert.ok(existsSync(catalogCacheFile()));
+
+	// A session-start sync that cannot fetch keeps the cached windows instead of re-registering 272k.
+	// The expiring account leaves the store first: sync's token policy would refresh it.
+	writeFileSync(
+		join(agentDir, "pi-accounts.json"),
+		JSON.stringify({
+			providers: {
+				"openai-codex": {
+					active: "cached",
+					accounts: {
+						cached: { type: "oauth", access: token("acct-cached"), refresh: "r1", expires: Date.now() + hour },
+						fresh: { type: "oauth", access: token("acct-fresh"), refresh: "r2", expires: Date.now() + hour },
+					},
+				},
+			},
+		}),
+	);
+	const warnings: string[] = [];
+	const ctx = {
+		modelRegistry: { getAll: () => [], getRegisteredProviderIds: () => [...registered.keys()] },
+		ui: { notify: (message: string) => warnings.push(message) },
+	};
+	const syncRequests: string[] = [];
+	globalThis.fetch = (async (input: string | URL | Request) => {
+		syncRequests.push(String(input));
+		throw new Error("network down");
+	}) as typeof fetch;
+
+	process.env.PI_OFFLINE = "1";
+	await registry.sync(ctx as never);
+	delete process.env.PI_OFFLINE;
+	assert.equal(syncRequests.length, 0, "an offline sync makes no request");
+	for (const id of ["codex", "codex-cached", "codex-fresh"]) {
+		assert.equal(windowOf(id), 872000, `an offline sync keeps the cached window of ${id}`);
+	}
+
+	await registry.sync(ctx as never);
+	globalThis.fetch = realFetch;
+	assert.equal(syncRequests.filter((url) => url.includes("/oauth/token")).length, 0, "a sync with live tokens refreshes nothing");
+	assert.equal(syncRequests.filter((url) => url.includes("/codex/models")).length, 2, "the failing sync tried every account");
+	assert.equal(warnings.length, 2, "each failed fetch is reported");
+	for (const id of ["codex", "codex-cached", "codex-fresh"]) {
+		assert.equal(windowOf(id), 872000, `a failed fetch keeps the cached window of ${id}`);
+	}
+	registry.stop();
 }
 
 console.log("codex-catalog-cache: ok");

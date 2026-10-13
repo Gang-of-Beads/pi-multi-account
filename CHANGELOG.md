@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **A session-start sync that cannot fetch keeps the cached context windows.** With
+  `PI_OFFLINE` set, or when the `/codex/models` request failed, the sync re-registered the
+  codex aliases with pi's base 272k windows, overriding the cached ones the load had
+  registered; a host that honours re-registration (the pi TUI) then showed 272k. The sync now
+  falls back to the cached catalog of the same ChatGPT account.
+
 ## 0.8.34
 
 - **Codex models get the account's full context window, including gpt-6.1-sol.** The
