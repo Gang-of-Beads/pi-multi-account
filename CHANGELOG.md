@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.34
 
 - **Codex models get the account's full context window, including gpt-6.1-sol.** The
   `/codex/models` catalog request claimed Codex CLI 0.154.0, and the backend hides newer
