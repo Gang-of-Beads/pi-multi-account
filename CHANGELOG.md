@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.35
 
 - **A session-start sync that cannot fetch keeps the cached context windows.** With
   `PI_OFFLINE` set, or when the `/codex/models` request failed, the sync re-registered the
