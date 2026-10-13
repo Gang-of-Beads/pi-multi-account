@@ -14,8 +14,8 @@
  * request identity so plan billing applies.
  */
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { highestVersion, isCliVersion, probeCliVersion } from "./cli-version.ts";
 import { errorMessage } from "./errors.ts";
 
 const BILLING_SALT = "59cf53e54c78";
@@ -58,12 +58,7 @@ export const CC_ENTRYPOINT = "sdk-cli";
 // request would be absurd.
 let detectedClaudeVersion: string | undefined | null = null;
 
-/** The wire shape of a claimed version: dotted numbers, optional pre-release suffix. */
-const CLI_VERSION_SHAPE = "\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?";
-
-/** One source for that shape, so the probe and the validator cannot drift apart. */
-const CLI_VERSION_EXACT = new RegExp(`^${CLI_VERSION_SHAPE}$`);
-const CLI_VERSION_IN_TEXT = new RegExp(`\\b(${CLI_VERSION_SHAPE})`);
+export { isCliVersion };
 
 /**
  * Version of a locally installed Claude Code CLI, if one exists.
@@ -76,39 +71,13 @@ const CLI_VERSION_IN_TEXT = new RegExp(`\\b(${CLI_VERSION_SHAPE})`);
  */
 export function detectClaudeVersion(): string | undefined {
 	if (detectedClaudeVersion !== null) return detectedClaudeVersion;
-	try {
-		const out = execFileSync("claude", ["--version"], {
-			timeout: 3000,
-			encoding: "utf8",
-		});
-		detectedClaudeVersion = CLI_VERSION_IN_TEXT.exec(out)?.[1];
-	} catch {
-		detectedClaudeVersion = undefined;
-	}
+	detectedClaudeVersion = probeCliVersion("claude");
 	return detectedClaudeVersion;
 }
 
 /** Test hook: forget the memoized probe result. */
 export function resetClaudeVersionCache(): void {
 	detectedClaudeVersion = null;
-}
-
-/** Compare dotted numeric version prefixes; pre-release suffixes are ignored. */
-function compareVersions(a: string, b: string): number {
-	const parts = (value: string): number[] =>
-		(/^\d+(?:\.\d+)*/.exec(value)?.[0] ?? "").split(".").map((part) => Number(part) || 0);
-	const left = parts(a);
-	const right = parts(b);
-	for (let i = 0; i < Math.max(left.length, right.length); i++) {
-		const diff = (left[i] ?? 0) - (right[i] ?? 0);
-		if (diff !== 0) return diff < 0 ? -1 : 1;
-	}
-	return 0;
-}
-
-/** A claim worth putting on the wire. */
-export function isCliVersion(value: string | undefined): value is string {
-	return value !== undefined && CLI_VERSION_EXACT.test(value);
 }
 
 /**
@@ -119,12 +88,7 @@ export function isCliVersion(value: string | undefined): value is string {
  * model's minimum. A malformed floor is dropped rather than put on the wire.
  */
 export function claimedCliVersion(...floors: Array<string | undefined>): string {
-	return floors
-		.filter(isCliVersion)
-		.reduce(
-			(highest, candidate) => (compareVersions(candidate, highest) > 0 ? candidate : highest),
-			CC_VERSION,
-		);
+	return highestVersion(CC_VERSION, ...floors);
 }
 
 /** The version a complete user-agent override names, if it names one. */

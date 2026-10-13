@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **Codex models get the account's full context window, including gpt-6.1-sol.** The
+  `/codex/models` catalog request claimed Codex CLI 0.154.0, and the backend hides newer
+  models from older clients: gpt-6.1-sol needs 0.160 and gpt-6-sol / gpt-6-luna need 0.158,
+  so they kept pi's base 272k instead of the account's 872k (reported 2026-10-13). The claim
+  is now the highest of a pin at the current release (0.162.1), `CODEX_CLIENT_VERSION_MIN`, and
+  a local `codex --version`, the same floor rule the Claude version uses (`cli-version.ts`).
+
+- **The windows are right when the extension loads, not only after a session starts.** The
+  catalog used to be applied by the session-start sync, which re-registers the providers; a
+  host that freezes providers after load (PI WEB's session daemon) ignores that, so every
+  codex model stayed at 272k there. The catalog is now cached per account and the aliases
+  register with it at load, as the Anthropic aliases do with their catalogue; an account with
+  no cached catalog is fetched once at load.
+
+- `test/wiring.test.ts` clears an inherited `PI_CODING_AGENT_DIR`, which won over its
+  temporary `HOME` and handed it the real account store.
+
 ## 0.8.32
 
 - **The codex / github-copilot account bridge is part of this package now.** `codex` and

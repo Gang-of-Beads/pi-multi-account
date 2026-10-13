@@ -14,6 +14,8 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "pi-multi-account-home-"));
 const logFile = join(home, "extension.log");
 process.env.HOME = home;
+// An inherited agent dir would win over HOME and hand the test the real account store.
+delete process.env.PI_CODING_AGENT_DIR;
 process.env.PI_MULTI_ACCOUNT_LOG = "debug";
 process.env.PI_MULTI_ACCOUNT_LOG_FILE = logFile;
 // A stub host has no keychain flow to complete, and no accounts to import.

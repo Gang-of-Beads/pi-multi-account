@@ -20,7 +20,15 @@ import { watch, type FSWatcher } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import { type ContextCatalog, accountIdOf, applyContextWindows, errorDetail, fetchContextCatalog } from "./codex-catalog.ts";
+import {
+	type ContextCatalog,
+	accountIdOf,
+	applyContextWindows,
+	errorDetail,
+	fetchContextCatalog,
+	readCachedCatalogs,
+	writeCachedCatalogs,
+} from "./codex-catalog.ts";
 import {
 	ACTIVE_ALIAS_ID,
 	ALIAS_PREFIX,
@@ -134,7 +142,14 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 		}
 	}
 
-	async function fetchCatalogs(ctx: ExtensionContext): Promise<Map<string, ContextCatalog>> {
+	/**
+	 * Fetch the catalog of every stored account (or only those `known` has no catalog for) and
+	 * remember the fresh ones for the next load. A failure keeps the base windows and says so.
+	 */
+	async function fetchCatalogs(
+		warn: (message: string) => void,
+		known: ReadonlyMap<string, ContextCatalog> = new Map(),
+	): Promise<Map<string, ContextCatalog>> {
 		const catalogs = new Map<string, ContextCatalog>();
 		if (/^(1|true|yes)$/i.test(process.env.PI_OFFLINE ?? "")) return catalogs;
 		const state = readCodexState();
@@ -142,17 +157,19 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 			codexAliasIds(state).map(async (id) => {
 				const found = accountFor(state, id);
 				if (!found) return;
+				const accountId = accountIdOf(found.credential.access);
+				if (accountId !== undefined && known.has(accountId)) return;
 				try {
 					const catalog = await fetchContextCatalog((await freshCredential(found.credential)).access ?? "");
 					catalogs.set(catalog.accountId, catalog);
 				} catch (error) {
-					ctx.ui.notify(
-						`Codex account "${found.name}": using base context windows; ${errorDetail(error)}`,
-						"warning",
-					);
+					warn(`Codex account "${found.name}": using base context windows; ${errorDetail(error)}`);
 				}
 			}),
 		);
+		await writeCachedCatalogs(catalogs).catch((error: unknown) => {
+			logError("codex.catalog_cache_write_failed", { detail: errorDetail(error) });
+		});
 		return catalogs;
 	}
 
@@ -163,7 +180,7 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 		}
 		const generation = ++syncGeneration;
 		sweepStaleAliases(ctx, wantedIds(readCodexState()));
-		const catalogs = await fetchCatalogs(ctx);
+		const catalogs = await fetchCatalogs((message) => ctx.ui.notify(message, "warning"));
 		// A second sync may have started while the catalogs were in flight; only the newest
 		// one may register, or a slow stale fetch would overwrite fresher metadata.
 		if (generation !== syncGeneration) return;
@@ -234,8 +251,20 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 	});
 
 	return {
+		/**
+		 * Register with the real windows before any session exists, as the Anthropic aliases do: a
+		 * host that freezes providers after load never sees the session-start sync's re-registration.
+		 * The cache answers at once; an account with no cached catalog is fetched here, once.
+		 */
 		bootstrap: async () => {
-			for (const id of wantedIds(readCodexState())) registerAlias(id);
+			const cached = readCachedCatalogs();
+			const fetched = await fetchCatalogs((message) => logError("codex.catalog_bootstrap_failed", { detail: message }), cached);
+			const catalogs = new Map([...cached, ...fetched]);
+			const state = readCodexState();
+			for (const id of wantedIds(state)) {
+				const accountId = accountIdOf(accountFor(state, id)?.credential.access);
+				registerAlias(id, accountId ? catalogs.get(accountId) : undefined);
+			}
 		},
 		sync,
 		watchStore,

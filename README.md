@@ -79,10 +79,11 @@ Imported credentials are read-only: this package never writes into Claude Code's
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
 | `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | JSONL diagnostics file |
 | `ANTHROPIC_CLI_VERSION_MIN` | the highest of the pinned `2.1.296`, a local `claude --version`, and this value | Raises the version claimed in the billing header and the user-agent. It is a floor, never a downgrade: a value below the pin or below a local claude is ignored. The gateway enforces a per-model minimum (`claude_code_version_too_old`), so only a claim at or above it reaches a new model. An exact version comes from `ANTHROPIC_USER_AGENT` instead |
+| `CODEX_CLIENT_VERSION_MIN` | the highest of the pinned `0.162.1`, a local `codex --version`, and this value | Raises the Codex CLI version the ChatGPT `/codex/models` catalog request claims. The catalog hides newer models from older clients, and a model missing from it keeps pi's base window (272k) instead of the account's maximum. A floor, never a downgrade |
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | User-agent entrypoint override |
 | `ANTHROPIC_USER_AGENT` | generated | Complete user-agent override. It is the last word: the `claude-cli/<version>` it names becomes the billing header's `cc_version` too, so the two cannot disagree |
 
-The account store is `~/.pi/agent/pi-accounts.json`. Logs never contain tokens; they use short SHA-256 fingerprints. Inspect them with:
+The account store is `~/.pi/agent/pi-accounts.json`. Each Codex account's context windows from its last catalog are kept in `~/.pi/agent/pi-multi-account-codex-catalog.json`, so the `codex` providers register with them when the extension loads. Logs never contain tokens; they use short SHA-256 fingerprints. Inspect them with:
 
 ```bash
 tail -f ~/.pi/agent/pi-multi-account.log

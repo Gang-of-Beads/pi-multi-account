@@ -8,10 +8,44 @@
  * Windows are keyed by the token's ChatGPT account id, so a routine token
  * rotation keeps them and a re-login into a different account drops them.
  */
+import { readFileSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { highestVersion, probeCliVersion } from "./cli-version.ts";
 import { BASE_URL } from "./codex-shared.ts";
 
-/** Codex discovery is version-gated; older clients receive an incomplete catalog. */
-const CODEX_CLIENT_VERSION = "0.154.0";
+/**
+ * The Codex CLI release the catalog request claims. Discovery is version-gated: an older client
+ * receives an incomplete catalog, and a model missing from it keeps pi's native window (272k).
+ * Measured 2026-10-13: 0.154.0 got no gpt-6.1-sol (it needs 0.160+) and no gpt-6-sol or
+ * gpt-6-luna (0.158+), so those stayed at 272k instead of 872k. Kept at the latest published
+ * openai/codex release; bump when a release lands.
+ */
+export const CODEX_CLIENT_VERSION = "0.162.1";
+
+/** Raise the claimed Codex version without waiting for a release; a floor, like ANTHROPIC_CLI_VERSION_MIN. */
+export const CODEX_VERSION_MIN_ENV = "CODEX_CLIENT_VERSION_MIN";
+
+// undefined = probed and not found; null = not probed yet.
+let detectedCodexVersion: string | undefined | null = null;
+
+/** Version of a locally installed Codex CLI (`codex --version` prints `codex-cli <version>`), if any. */
+export function detectCodexVersion(): string | undefined {
+	if (detectedCodexVersion !== null) return detectedCodexVersion;
+	detectedCodexVersion = probeCliVersion("codex");
+	return detectedCodexVersion;
+}
+
+/** Test hook: forget the memoized probe result. */
+export function resetCodexVersionCache(): void {
+	detectedCodexVersion = null;
+}
+
+/** The version to claim: the highest of the pin, the environment floor and a local Codex CLI. */
+export function codexClientVersion(): string {
+	return highestVersion(CODEX_CLIENT_VERSION, process.env[CODEX_VERSION_MIN_ENV], detectCodexVersion());
+}
 
 export interface ContextCatalog {
 	accountId: string;
@@ -58,11 +92,54 @@ export function errorDetail(error: unknown): string {
 	return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
 }
 
+/**
+ * The last catalog fetched per account, so aliases can register their real windows when the
+ * extension loads, before any session exists - as the Anthropic aliases do with their static
+ * catalogue. A host that freezes providers after load (PI WEB's session daemon) ignores the
+ * re-registration a session-start sync makes; the windows have to be right the first time.
+ * A separate file: the shared account store stays read-only here.
+ */
+export function catalogCacheFile(): string {
+	return join(getAgentDir(), "pi-multi-account-codex-catalog.json");
+}
+
+export function readCachedCatalogs(file: string = catalogCacheFile()): Map<string, ContextCatalog> {
+	const catalogs = new Map<string, ContextCatalog>();
+	try {
+		const raw = JSON.parse(readFileSync(file, "utf8")) as { accounts?: Record<string, { windows?: Record<string, unknown> }> };
+		for (const [accountId, entry] of Object.entries(raw.accounts ?? {})) {
+			const windows = new Map(
+				Object.entries(entry.windows ?? {}).filter((pair): pair is [string, number] => positiveInteger(pair[1])),
+			);
+			if (windows.size > 0) catalogs.set(accountId, { accountId, windows });
+		}
+	} catch {
+		// No cache yet, or an unreadable one: the catalog is fetched instead.
+	}
+	return catalogs;
+}
+
+/** Merge fresh catalogs into the cache; the write is a rename, so a concurrent reader never sees half a file. */
+export async function writeCachedCatalogs(
+	fresh: ReadonlyMap<string, ContextCatalog>,
+	file: string = catalogCacheFile(),
+): Promise<void> {
+	if (fresh.size === 0) return;
+	const merged = new Map([...readCachedCatalogs(file), ...fresh]);
+	const accounts = Object.fromEntries(
+		[...merged].map(([accountId, catalog]) => [accountId, { windows: Object.fromEntries(catalog.windows) }]),
+	);
+	await mkdir(dirname(file), { recursive: true });
+	const temp = `${file}.${process.pid}.tmp`;
+	await writeFile(temp, `${JSON.stringify({ version: 1, accounts }, null, 2)}\n`, "utf8");
+	await rename(temp, file);
+}
+
 /** Redirects are refused so the bearer token is never replayed to another origin. */
 export async function fetchContextCatalog(access: string, request: typeof fetch = fetch): Promise<ContextCatalog> {
 	const accountId = accountIdOf(access);
 	if (!accountId) throw new Error("Codex token has no account identity");
-	const response = await request(`${BASE_URL}/codex/models?client_version=${CODEX_CLIENT_VERSION}`, {
+	const response = await request(`${BASE_URL}/codex/models?client_version=${encodeURIComponent(codexClientVersion())}`, {
 		headers: { Authorization: `Bearer ${access}`, "ChatGPT-Account-Id": accountId },
 		signal: AbortSignal.timeout(8000),
 		redirect: "error",
