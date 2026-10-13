@@ -34,6 +34,8 @@ import {
 	ALIAS_PREFIX,
 	BASE_URL,
 	NATIVE_PROVIDER,
+	REFRESH_SKEW_MS,
+	type CodexCredential,
 	accountFor,
 	accountsFile,
 	codexAliasIds,
@@ -65,6 +67,24 @@ function stateFingerprint(state: ReturnType<typeof readCodexState>): string {
 			.sort(),
 	});
 }
+
+/** How a catalog fetch gets its token. */
+type CatalogToken = (credential: CodexCredential) => Promise<string | undefined>;
+
+/**
+ * At load no refresh may run: a refresh rotates the shared refresh token, and only the background
+ * sweep may do that, behind its file lock (codex-shared.ts); a load also runs before that sweep and
+ * nothing bounds a refresh request. A token about to expire is skipped instead, and the session-start
+ * sync, which runs after the sweep, fills that account's cache for the next load.
+ */
+const tokenAtLoad: CatalogToken = (credential) =>
+	Promise.resolve((credential.expires ?? 0) > Date.now() + REFRESH_SKEW_MS ? credential.access : undefined);
+
+/** After the sweep a token is normally fresh; the in-memory refresh is the last resort it always was. */
+const tokenAfterSweep: CatalogToken = async (credential) => (await freshCredential(credential)).access;
+
+/** A load waits this long at most per uncached account; the session-start sync keeps the longer default. */
+const CATALOG_TIMEOUT_AT_LOAD_MS = 3000;
 
 export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistry {
 	if (process.env.PI_MULTI_ACCOUNT_ALIASES === "0") {
@@ -144,12 +164,15 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 
 	/**
 	 * Fetch the catalog of every stored account (or only those `known` has no catalog for) and
-	 * remember the fresh ones for the next load. A failure keeps the base windows and says so.
+	 * remember the fresh ones for the next load. A failure keeps the base windows and says so; an
+	 * account the token policy declines is left to a later fetch.
 	 */
 	async function fetchCatalogs(
 		warn: (message: string) => void,
-		known: ReadonlyMap<string, ContextCatalog> = new Map(),
+		tokenFor: CatalogToken,
+		options: { known?: ReadonlyMap<string, ContextCatalog>; timeoutMs?: number } = {},
 	): Promise<Map<string, ContextCatalog>> {
+		const known = options.known ?? new Map<string, ContextCatalog>();
 		const catalogs = new Map<string, ContextCatalog>();
 		if (/^(1|true|yes)$/i.test(process.env.PI_OFFLINE ?? "")) return catalogs;
 		const state = readCodexState();
@@ -160,7 +183,9 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 				const accountId = accountIdOf(found.credential.access);
 				if (accountId !== undefined && known.has(accountId)) return;
 				try {
-					const catalog = await fetchContextCatalog((await freshCredential(found.credential)).access ?? "");
+					const access = await tokenFor(found.credential);
+					if (access === undefined) return;
+					const catalog = await fetchContextCatalog(access, fetch, options.timeoutMs);
 					catalogs.set(catalog.accountId, catalog);
 				} catch (error) {
 					warn(`Codex account "${found.name}": using base context windows; ${errorDetail(error)}`);
@@ -180,7 +205,7 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 		}
 		const generation = ++syncGeneration;
 		sweepStaleAliases(ctx, wantedIds(readCodexState()));
-		const catalogs = await fetchCatalogs((message) => ctx.ui.notify(message, "warning"));
+		const catalogs = await fetchCatalogs((message) => ctx.ui.notify(message, "warning"), tokenAfterSweep);
 		// A second sync may have started while the catalogs were in flight; only the newest
 		// one may register, or a slow stale fetch would overwrite fresher metadata.
 		if (generation !== syncGeneration) return;
@@ -258,7 +283,10 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 		 */
 		bootstrap: async () => {
 			const cached = readCachedCatalogs();
-			const fetched = await fetchCatalogs((message) => logError("codex.catalog_bootstrap_failed", { detail: message }), cached);
+			const fetched = await fetchCatalogs((message) => logError("codex.catalog_bootstrap_failed", { detail: message }), tokenAtLoad, {
+				known: cached,
+				timeoutMs: CATALOG_TIMEOUT_AT_LOAD_MS,
+			});
 			const catalogs = new Map([...cached, ...fetched]);
 			const state = readCodexState();
 			for (const id of wantedIds(state)) {

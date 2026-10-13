@@ -8,8 +8,9 @@
  * Windows are keyed by the token's ChatGPT account id, so a routine token
  * rotation keeps them and a re-login into a different account drops them.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { highestVersion, probeCliVersion } from "./cli-version.ts";
@@ -119,7 +120,12 @@ export function readCachedCatalogs(file: string = catalogCacheFile()): Map<strin
 	return catalogs;
 }
 
-/** Merge fresh catalogs into the cache; the write is a rename, so a concurrent reader never sees half a file. */
+/**
+ * Merge fresh catalogs into the cache; the write is a rename, so a concurrent reader never sees half a
+ * file. Two writers can still race and the last rename wins, which costs the loser one fetch at the next
+ * load: this is a cache, not a store, and a lock would put the shared account store's lock on a path that
+ * does not need it.
+ */
 export async function writeCachedCatalogs(
 	fresh: ReadonlyMap<string, ContextCatalog>,
 	file: string = catalogCacheFile(),
@@ -130,18 +136,23 @@ export async function writeCachedCatalogs(
 		[...merged].map(([accountId, catalog]) => [accountId, { windows: Object.fromEntries(catalog.windows) }]),
 	);
 	await mkdir(dirname(file), { recursive: true });
-	const temp = `${file}.${process.pid}.tmp`;
-	await writeFile(temp, `${JSON.stringify({ version: 1, accounts }, null, 2)}\n`, "utf8");
-	await rename(temp, file);
+	const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temp, `${JSON.stringify({ version: 1, accounts }, null, 2)}\n`, "utf8");
+		await rename(temp, file);
+	} catch (error) {
+		await rm(temp, { force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 /** Redirects are refused so the bearer token is never replayed to another origin. */
-export async function fetchContextCatalog(access: string, request: typeof fetch = fetch): Promise<ContextCatalog> {
+export async function fetchContextCatalog(access: string, request: typeof fetch = fetch, timeoutMs = 8000): Promise<ContextCatalog> {
 	const accountId = accountIdOf(access);
 	if (!accountId) throw new Error("Codex token has no account identity");
 	const response = await request(`${BASE_URL}/codex/models?client_version=${encodeURIComponent(codexClientVersion())}`, {
 		headers: { Authorization: `Bearer ${access}`, "ChatGPT-Account-Id": accountId },
-		signal: AbortSignal.timeout(8000),
+		signal: AbortSignal.timeout(timeoutMs),
 		redirect: "error",
 	});
 	if (!response.ok) throw new Error(`Codex model catalog request failed (${response.status})`);

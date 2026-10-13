@@ -14,7 +14,10 @@
   host that freezes providers after load (PI WEB's session daemon) ignores that, so every
   codex model stayed at 272k there. The catalog is now cached per account and the aliases
   register with it at load, as the Anthropic aliases do with their catalogue; an account with
-  no cached catalog is fetched once at load.
+  no cached catalog is fetched once at load, for at most 3 s. A load never refreshes a token:
+  that would rotate the shared refresh token outside the background sweep's lock, and before
+  the sweep has run; an account whose token is about to expire is left to the session-start
+  sync.
 
 - `test/wiring.test.ts` clears an inherited `PI_CODING_AGENT_DIR`, which won over its
   temporary `HOME` and handed it the real account store.
