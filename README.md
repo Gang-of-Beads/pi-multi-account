@@ -125,7 +125,7 @@ pi-ai encodes a tool result as a content-block array whenever it carries an imag
 
 Only requests that already carry the Claude Code identity block are touched, so API-key accounts and GitHub Copilot are unaffected. `PI_MULTI_ACCOUNT_SHAPE=0` turns off the de-fingerprinting and the reasoning strip; the billing header and the errored-tool-result fix still apply.
 
-Shaping runs on the provider call itself, not only on pi's `before_provider_request` hook, because `/compact` does not go through the agent loop: it calls the provider stream directly with its own options. Measured on pi 1.1.0, a summarization request reached the wire with neither the billing header nor the strip until the provider-level hook was added.
+Shaping is attached in the runtime's `prepareRequest` patch, not only to pi's `before_provider_request` hook. That hook is driven by the agent loop and `/compact` is not part of it — it calls the provider stream directly with its own options — so a summarization request used to reach the wire with neither the billing header nor the strip (measured on pi 1.1.0). `prepareRequest` runs for every provider and every request, including compaction, and unlike a `registerProvider("anthropic", …)` it cannot take the `anthropic` id away from the pool.
 
 A successful `/compact` therefore no longer carries the assistant's reasoning into the summary. That is the deliberate trade: the alternative is a summarization request that is refused outright.
 

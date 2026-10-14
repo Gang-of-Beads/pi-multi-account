@@ -31,7 +31,6 @@ import {
 	TRANSCRIPT_THINKING_MARKER,
 } from "./anthropic-shape.ts";
 import { highestVersion, isCliVersion, probeCliVersion } from "./cli-version.ts";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { logDebug } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 
@@ -211,34 +210,22 @@ export function buildBillingHeaderValue(
 }
 
 /**
- * pi's built-in Anthropic provider, captured once so the pass-through stays honest
- * (the registration below is not the built-in, so there is no recursion).
- */
-const base = (
-	builtinProviders() as Array<{ id: string; stream?: unknown; streamSimple?: unknown }>
-).find((provider) => provider.id === "anthropic");
-
-/** Pass-through stream wrappers that only add the shaping payload hook. */
-const shapingStreamHost = base?.stream
-	? {
-			stream: (model: unknown, context: unknown, options: unknown) =>
-				(base.stream as Function)(model, context, withShapingOptions(options)),
-			streamSimple: (model: unknown, context: unknown, options: unknown) =>
-				(base.streamSimple as Function)(model, context, withShapingOptions(options)),
-		}
-	: {};
-
-/**
- * The provider-call options with the shaping payload hook attached.
+ * The provider-call options with the shaping payload hook attached, in place.
  *
  * Unconditional, even with `PI_MULTI_ACCOUNT_SHAPE=0`: that switch turns off the
  * *shaping*, which `injectBillingHeader` reads itself. Gating here would also drop
  * the billing header on this route - and this route is the only one a compaction
- * request has. Shared with aliases.ts, which adds only its fetch wrapper.
+ * request has.
+ *
+ * Callers are the `prepareRequest` patch in index.ts (every provider, every host,
+ * compaction included) and the alias stream wrapper in aliases.ts; the pool's
+ * stream wrapper calls `withShapingOnPayload` directly instead, building a fresh
+ * per-attempt options literal.
  */
-export function withShapingOptions(options: unknown): Record<string, unknown> {
+export function attachShaping(options: unknown): Record<string, unknown> {
 	const record = (options ?? {}) as Record<string, unknown>;
-	return { ...record, onPayload: withShapingOnPayload(record.onPayload as never) };
+	record.onPayload = withShapingOnPayload(record.onPayload as never);
+	return record;
 }
 
 const BILLING_PREFIX = "x-anthropic-billing-header";
@@ -501,13 +488,16 @@ export function registerBillingLayer(pi: ExtensionAPI): void {
 	// sends a bare `claude-cli/<version>` which fails plan-billing validation;
 	// the `(external, <entrypoint>)` form is required for subscription billing.
 	// (Alias providers set their own user-agent in aliases.ts.)
+	// `headers` only, deliberately: registering `stream`/`streamSimple` here makes
+	// this layer a second claimant of the `anthropic` id, and on a host that
+	// composes providers once (pi-web) it can win over the pool's registration -
+	// which silently takes the aggregate out of the request path, so a 429 on one
+	// account stops failing over at all. Measured: pi-web went from 1377 pooled
+	// requests to 0. The payload hook is attached in index.ts's `prepareRequest`
+	// patch instead, which fires for every provider and for compaction.
 	pi.registerProvider("anthropic", {
-		api: "anthropic-messages",
 		headers: { "user-agent": buildUserAgent() },
-		// Native (no-pool) requests need the payload hook too: a pool replaces this
-		// stream, but without one, compaction would otherwise escape shaping.
-		...shapingStreamHost,
-	} as unknown as Parameters<typeof pi.registerProvider>[1]);
+	});
 
 	// Inject the x-anthropic-billing-header system block. Only fires for
 	// Claude-model OAuth payloads that already carry the "You are Claude

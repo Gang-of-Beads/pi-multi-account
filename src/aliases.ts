@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earen
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicAdapter } from "./adapters.ts";
-import { applyUserAgentOverride, buildUserAgent, withShapingOptions } from "./billing.ts";
+import { applyUserAgentOverride, attachShaping, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 import { isCredentialSuspect, REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
@@ -129,11 +129,10 @@ function registerAliasProvider(
 	// Same reason as the pool: compaction reaches the provider stream directly,
 	// with options that carry no payload hook.
 	const aliasOptions = (options: unknown): Record<string, unknown> => {
-		const record = withShapingOptions(options);
-		return {
-			...record,
-			fetch: uaFixFetch(typeof record.fetch === "function" ? (record.fetch as typeof fetch) : globalThis.fetch),
-		};
+		// Clone so the caller's options are not mutated (this wrapper only needs the return).
+		const record = attachShaping(options);
+		record.fetch = uaFixFetch(typeof record.fetch === "function" ? (record.fetch as typeof fetch) : globalThis.fetch);
+		return record;
 	};
 	pi.unregisterProvider(id);
 	pi.registerProvider({

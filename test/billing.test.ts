@@ -71,10 +71,18 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 // their own fetch wrappers because they replace the provider stream.
 {
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+	const registered = new Map<string, Record<string, unknown>>();
 	registerBillingLayer({
-		registerProvider: () => undefined,
+		registerProvider: (id: string, config: Record<string, unknown>) => registered.set(id, config),
 		on: (name: string, handler: (event: any, ctx: any) => unknown) => handlers.set(name, handler),
 	} as never);
+	const provider = registered.get("anthropic")!;
+	assert.deepEqual(Object.keys(provider), ["headers"], "headers-only: no api/stream/streamSimple, so the pool keeps the anthropic id");
+	assert.equal(
+		(provider.headers as Record<string, string>)["user-agent"],
+		FULL_UA,
+		"the registration still carries the billing user-agent",
+	);
 	const headers: Record<string, string> = { "user-agent": "claude-cli/2.1.75" };
 	await handlers.get("before_provider_headers")!({ headers }, { model: { provider: "anthropic" } });
 	assert.equal(headers["user-agent"], FULL_UA, "native Anthropic OAuth gets the final UA override");
@@ -180,9 +188,14 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 	const solo = (await withShapingOnPayload(undefined)(payload)) as any;
 	assert.match(solo.system[0].text, /^x-anthropic-billing-header: /, "shaping works without a caller hook");
 
-	// Both routes may run for one payload; the second pass is a no-op.
+	// Both routes may run for one payload; the second pass must leave the bytes alone.
+	// Snapshotted, because the helper hands back the same object - a structural
+	// compare against itself would pass even if it had mutated something.
+	const snapshot = JSON.stringify(solo);
 	const twice = (await withShapingOnPayload(undefined)(solo)) as any;
-	assert.equal(twice.system.length, solo.system.length, "shaping is idempotent across both routes");
+	assert.equal(JSON.stringify(twice), snapshot, "a second pass changes nothing at all");
+	assert.equal(twice.system[0].text, solo.system[0].text, "the billing header is not injected twice");
+	assert.equal(twice.system.length, 2, "and no block is added or dropped");
 }
 
 // Request shaping on the OAuth path: pi prose goes, the transcript's transcribed

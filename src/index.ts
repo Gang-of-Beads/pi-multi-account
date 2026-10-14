@@ -53,7 +53,7 @@ import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerCodexAliasProviders } from "./codex-aliases.ts";
-import { registerBillingLayer } from "./billing.ts";
+import { attachShaping, registerBillingLayer } from "./billing.ts";
 import { registerAnthropicModels } from "./models.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
 import { abortedBy, installAbortDiagnostics } from "./abort-diagnostics.ts";
@@ -442,8 +442,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 					try {
 						const r = await origPrepare.call(this, model, options);
-						const prepared = r as { options?: { apiKey?: unknown; fetch?: unknown }; apiKey?: unknown } | undefined;
+						const prepared = r as { options?: { apiKey?: unknown; fetch?: unknown; onPayload?: unknown }; apiKey?: unknown } | undefined;
 						const key = prepared?.options?.apiKey ?? prepared?.apiKey;
+						// The shaping payload hook goes here rather than on a
+						// `registerProvider("anthropic", { stream })` registration: this
+						// patch is on the runtime, so it fires for the pool, the aliases,
+						// the built-in and compaction alike, and it cannot take the
+						// `anthropic` id away from the pool on a host that composes
+						// providers once (pi-web). Compaction is the reason it has to exist
+						// at all - it calls the provider stream directly, so
+						// `before_provider_request` never sees it.
+						const beforeOnPayload = prepared?.options?.onPayload;
+						if (prepared?.options !== undefined) attachShaping(prepared.options);
 						if (prepared?.options !== undefined) {
 							const inner = (typeof prepared.options.fetch === "function" ? prepared.options.fetch : globalThis.fetch) as (a: unknown, b?: unknown) => Promise<Response>;
 							const marker = inner as { __pmaTraced?: boolean };
@@ -465,6 +475,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 							elapsedMs: Date.now() - t0,
 							shape: Object.keys((prepared ?? {}) as object).join(","),
 							keyKind: typeof key === "string" ? (key.includes("sk-ant-oat") ? "oauth-token" : key.slice(0, 14)) : typeof key,
+							// Different identity means the hook was really attached here;
+							// merely being a function would be true even without the call.
+							onPayloadWrapped:
+								typeof prepared?.options?.onPayload === "function" && prepared.options.onPayload !== beforeOnPayload,
 						});
 						return r;
 					} catch (error) {

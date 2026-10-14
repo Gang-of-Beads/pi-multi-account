@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **The aggregate pool is back in the request path on pi-web.** v0.8.36 attached the
+  shaping payload hook by registering `stream`/`streamSimple` on the `anthropic` id. That
+  made the billing layer a second claimant of an id the pool already owns, and on a host
+  that composes providers once (pi-web) the billing wrapper won: every request skipped
+  `runPool`, so a 429 on one account stopped failing over at all — measured, pi-web went
+  from 1377 pooled requests to 0, and `personal` sitting at its weekly cap surfaced as a
+  bare 429 instead of moving to `work`. The hook is attached in the runtime
+  `prepareRequest` patch instead, which fires for every provider and for compaction alike,
+  and `registerBillingLayer` is back to registering `headers` only. A test now pins that
+  registration to exactly `["headers"]`, because nothing did before.
+
 ## 0.8.36
 
 - **Anthropic stops answering OAuth requests with "reverse engineering or duplicating
