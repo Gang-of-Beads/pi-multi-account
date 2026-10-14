@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.36
 
 - **Anthropic stops answering OAuth requests with "reverse engineering or duplicating
   model outputs".** That text is Anthropic's `reasoning_extraction` refusal category, it
