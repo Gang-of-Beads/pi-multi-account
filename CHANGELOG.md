@@ -50,6 +50,15 @@
   `PI_MULTI_ACCOUNT_SHAPE` — turning the switch off should not also lose the 400 fix. It
   applies to OAuth requests only, which is where this extension owns the payload.
 
+- **A pool that is failing everywhere paces itself, and says so.** pi retries a failed
+  turn on its own and every retry is a fresh pool call, so a provider condition that hits
+  all accounts becomes a retry storm: the incident behind this ran 334 attempts over five
+  hours, 216 of them after the pool had already run out of accounts. After three consecutive
+  all-account failures the next request now waits before its first attempt, doubling from
+  1 s to a 30 s ceiling; a request that streams anything clears the streak, and a request
+  more than a minute later is not paced at all. The surfaced error names the wait, and the
+  pause is logged as `pool.stall_pause`.
+
 ## 0.8.35
 
 - **A session-start sync that cannot fetch keeps the cached context windows.** With

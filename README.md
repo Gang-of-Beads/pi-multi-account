@@ -51,6 +51,12 @@ Create a pool with an ordered account list:
 
 Then select `team/<model>` in `/model`. The pool tries one account at a time and retries the same request with the next account only before any content has streamed. An attempt is worth another account when it never answered (a timeout, a stream that threw), when it answered with a retryable status (401/403/408/429, 5xx), or when it answered `200` and the stream then failed — the shape the Anthropic gateway uses for its client-fingerprint block. It has no cooldown or retry-after scheduler; a failed account is simply no longer the next starting point.
 
+The one pace control is for the case where nothing works anywhere: after three consecutive requests in which every account failed, the next request waits before its first attempt, doubling from 1 s to a 30 s ceiling. A request that streams anything clears the streak, and a request more than a minute after the last failure does not count as part of one — coming back to a session later never makes you wait. The pool's error says so when it fires, and logs `pool.stall_pause`.
+
+```bash
+PI_MULTI_ACCOUNT_LOG=debug; tail -f ~/.pi/agent/pi-multi-account.log | grep stall
+```
+
 A pool named `anthropic` deliberately replaces the native Anthropic provider, so `anthropic/<model>` also fails over. All pools are stored in `~/.pi/agent/pi-multi-account-pools.json` and are restored at session start.
 
 ## Commands
@@ -131,6 +137,7 @@ A successful `/compact` therefore no longer carries the assistant's reasoning in
 - **`400 … all content must be type text if is_error is true`:** a failing tool returned an image; see [Request shaping](#request-shaping). This extension normalizes it on OAuth requests only — with a plain API key it is upstream pi-ai and unfixed.
 - **Another installation rotates shared tokens:** set `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0` on the passive installation.
 - **Requests are blocked as "reverse engineering or duplicating model outputs":** retry once; if it persists across accounts, check that shaping is on (`PI_MULTI_ACCOUNT_SHAPE` is unset) and that pi or a tool has not reworded the prompt anchors (see the drift test in `test/anthropic-shape.test.ts`).
+- **A pool error says it is waiting N seconds:** all accounts have failed several requests in a row; see [Pools and failover](#pools-and-failover).
 - **Billing lands on "extra usage" instead of the plan:** the billing header is not reaching the wire. Confirm the account is OAuth (`sk-ant-oat…`) and that the request is `anthropic` or a pool, not a plain API-key provider.
 
 ## Security

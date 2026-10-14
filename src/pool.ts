@@ -119,10 +119,80 @@ export function lastPoolAccount(poolName?: string): string | undefined {
  *
  * Rotation, not scheduling: a pool keeps using the account that last worked,
  * and an error moves it to the next one, one account at a time. There is no
- * cooldown clock, no backoff and no retry-after bookkeeping — a failing
- * account simply stops being the starting point.
+ * cooldown clock and no retry-after bookkeeping — a failing account simply
+ * stops being the starting point. The only pacing is `poolStalls`, which slows
+ * a pool down once every account has failed several calls in a row.
  */
 const poolCursor = new Map<string, string>();
+
+/**
+ * Pacing bound for a pool that keeps failing everywhere.
+ *
+ * pi retries a failed turn on its own, and every retry is a fresh pool call, so a
+ * provider-side condition that hits all accounts becomes a retry storm: the measured
+ * incident made 334 attempts over five hours, 216 of them after the pool had already
+ * run out of accounts, at 2-5s apart.
+ *
+ * The pool owns no scheduler and cannot stop pi's retry loop, so the one lever it has
+ * is to slow the next call down and say so. A call that streams anything clears the
+ * streak, and a call long after the last failure does not count as one - returning to
+ * a session an hour later must not make the user wait.
+ */
+const GOVERNOR_STALL_CALLS = 3;
+const GOVERNOR_MAX_PAUSE_MS = 30_000;
+const GOVERNOR_IDLE_GAP_MS = 60_000;
+
+interface PoolStall {
+	/** Consecutive calls in which every account failed. */
+	calls: number;
+	/** When the last of those calls finished. */
+	at: number;
+}
+
+const poolStalls = new Map<string, PoolStall>();
+
+/** Record one pool call that failed on every account. */
+function notePoolFailure(poolName: string): void {
+	const previous = poolStalls.get(poolName);
+	const stale = previous === undefined || Date.now() - previous.at > GOVERNOR_IDLE_GAP_MS;
+	poolStalls.set(poolName, { calls: stale ? 1 : previous.calls + 1, at: Date.now() });
+}
+
+/** Record one pool call that streamed an answer. */
+function notePoolSuccess(poolName: string): void {
+	poolStalls.delete(poolName);
+}
+
+/** Consecutive all-account failures behind this pool, for the notice and the pause. */
+export function poolStallCount(poolName: string): number {
+	return poolStalls.get(poolName)?.calls ?? 0;
+}
+
+/** How long the next call to this pool waits before its first attempt. */
+export function poolStallPauseMs(poolName: string): number {
+	const stall = poolStalls.get(poolName);
+	// A streak nobody has added to for a while no longer describes this moment:
+	// coming back to a session an hour later must not make the user sit through a
+	// pause sized for a storm that has since stopped.
+	if (!stall || Date.now() - stall.at > GOVERNOR_IDLE_GAP_MS) return 0;
+	if (stall.calls < GOVERNOR_STALL_CALLS) return 0;
+	return Math.min(GOVERNOR_MAX_PAUSE_MS, 1000 * 2 ** Math.min(stall.calls - GOVERNOR_STALL_CALLS, 5));
+}
+
+function stallPause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	// An already-aborted signal never fires its listener, so a caller that stopped
+	// before the pause began would otherwise wait it out.
+	if (ms <= 0 || signal?.aborted) return Promise.resolve();
+	return new Promise((resolve) => {
+		const done = (): void => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
+	});
+}
 
 /** Point a pool at the account that just served it. */
 function setPoolCursor(poolName: string, accountName: string): void {
@@ -137,6 +207,7 @@ export function resetPoolStateForTesting(): void {
 	lastResolvedAccount = undefined;
 	lastAccountByPool.clear();
 	poolCursor.clear();
+	poolStalls.clear();
 }
 
 /**
@@ -435,6 +506,19 @@ export function createPoolRuntime(
 				return;
 			}
 
+			// Slow a retry storm down before adding to it. pi retries the failed turn
+			// itself, so this is the only point where a streak is still visible.
+			const pause = poolStallPauseMs(definition.name);
+			if (pause > 0) {
+				logInfo("pool.stall_pause", { pool: definition.name, calls: poolStallCount(definition.name), ms: pause });
+				await stallPause(pause, signal);
+				if (signal?.aborted) {
+					outer.push(errorEvent("Request was aborted", "aborted"));
+					outer.end();
+					return;
+				}
+			}
+
 			let lastFailure: AssistantMessageEvent | undefined;
 			// What the loop tried and what each account answered. This is the only
 			// place this context exists: the surfaced error is a bare provider
@@ -496,6 +580,7 @@ export function createPoolRuntime(
 					// The account that worked becomes the next request's starting
 					// point: rotation only moves on failure.
 					setPoolCursor(definition.name, accountName);
+					notePoolSuccess(definition.name);
 					const responded = sawContent || heldStart !== undefined;
 					if (heldStart) outer.push(heldStart);
 					if (!responded) {
@@ -505,6 +590,12 @@ export function createPoolRuntime(
 					outer.end();
 					return;
 				}
+
+				// Anything that streamed means the provider really answered, so the
+				// "nothing works anywhere" streak is over even though this attempt
+				// still failed. Set by `forward`, so it is false for a response that
+				// died on its very first event.
+				if (sawContent) notePoolSuccess(definition.name);
 
 				const capturedStatus = captured();
 				const errorBody = (failure as { error?: { errorMessage?: string } }).error;
@@ -602,10 +693,25 @@ export function createPoolRuntime(
 					.join("; ");
 				const body = (lastFailure as { error?: { errorMessage?: string } }).error?.errorMessage ?? "";
 				const walked = passes > 1 ? ` in ${passes} passes` : "";
-				outer.push(errorEvent(`${body}\n\npi-multi-account: pool "${definition.name}" tried ${perAccount.length} account(s)${walked}: ${trace}.`));
+				notePoolFailure(definition.name);
+				const stall = poolStallCount(definition.name);
+				const pause = poolStallPauseMs(definition.name);
+				const stallNote =
+					pause > 0
+						? `\n\npi-multi-account: ${stall} consecutive requests failed on every account; waiting ${Math.round(pause / 1000)}s before the next.`
+						: "";
+				outer.push(
+					errorEvent(
+						`${body}\n\npi-multi-account: pool "${definition.name}" tried ${perAccount.length} account(s)${walked}: ${trace}.${stallNote}`,
+					),
+				);
 				outer.end();
 				return;
 			}
+			// Counted like any other all-account failure: to the user this is the same
+			// "the pool is not answering" as a provider error, and it must not be the
+			// one failure shape that never opens the pace valve.
+			notePoolFailure(definition.name);
 			outer.push(
 				errorEvent(
 					`pi-multi-account: every account in pool "${definition.name}" failed to resolve a credential. Check /accounts.`,

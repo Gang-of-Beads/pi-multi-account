@@ -36,6 +36,8 @@ import {
 	planAccountOrder,
 	poolFirstPick,
 	poolsEnabled,
+	poolStallCount,
+	poolStallPauseMs,
 	resetPoolStateForTesting,
 	type BaseStreamHost,
 } from "../src/pool.ts";
@@ -766,3 +768,94 @@ resetPoolsFileForTesting();
 resetSuspectCredentialsForTesting();
 resetPoolStateForTesting();
 resetPoolsFileForTesting();
+
+// ---------------------------------------------------------------------------
+// Stall pacing: a pool that failed on every account several calls in a row
+// slows the next call down and says so. pi retries a failed turn itself, and
+// every retry is a fresh pool call, so without this a provider-side condition
+// that hits all accounts becomes a retry storm (measured: 334 attempts over
+// five hours, at 2-5s apart).
+// ---------------------------------------------------------------------------
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+{
+	const store = await makeStore("personal", ["personal"]);
+	const fake = makeFakeProvider([
+		{ status: 503 },
+		{ status: 503 },
+		{ status: 503 },
+		{ status: 503 },
+		{ status: 503 },
+		{ status: 200, text: "back" },
+	]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "stall", accounts: ["personal"] });
+	const registered = providers["stall"]!;
+	const call = () => collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+
+	assert.equal(poolStallPauseMs("stall"), 0, "a pool that has not failed is not paced");
+
+	let last: { events: AssistantMessageEvent[] } | undefined;
+	for (let i = 0; i < 3; i += 1) last = await call();
+	assert.equal(poolStallCount("stall"), 3, "consecutive all-account failures are counted");
+	assert.equal(poolStallPauseMs("stall"), 1000, "the third failure arms a one-second pause");
+	const message = (last!.events.find((event) => event.type === "error") as { error?: { errorMessage?: string } } | undefined)?.error?.errorMessage ?? "";
+	assert.match(message, /3 consecutive requests failed on every account; waiting 1s/, "the error says why the next call waits");
+
+	const t4 = Date.now();
+	await call();
+	assert.ok(Date.now() - t4 >= 950, `the fourth call actually waited (${Date.now() - t4}ms)`);
+	assert.equal(poolStallCount("stall"), 4, "the streak keeps counting");
+	assert.equal(poolStallPauseMs("stall"), 2000, "and the pause doubles");
+	assert.ok(logEvents("pool.stall_pause").length >= 1, "the pause is logged");
+
+	// A call long after the last failure restarts the streak instead of adding to
+	// it, and the first call back is not paced at all: returning to a session an
+	// hour later must not make the user wait for a storm that has since stopped.
+	const realNow = Date.now;
+	Date.now = () => realNow() + 61_000;
+	const t5 = Date.now();
+	await call();
+	assert.ok(Date.now() - t5 < 950, "the first call after the idle gap is not paced");
+	assert.equal(poolStallCount("stall"), 1, "a failure long after the last one starts a fresh streak");
+	assert.equal(poolStallPauseMs("stall"), 0, "and is still not paced");
+	Date.now = realNow;
+
+	const { events } = await call();
+	assert.equal((events.at(-1) as { message?: { content: Array<{ text?: string }> } }).message?.content[0]?.text, "back", "the pool recovers");
+	assert.equal(poolStallCount("stall"), 0, "a call that streamed anything clears the streak");
+	assert.equal(poolStallPauseMs("stall"), 0, "and the pacing with it");
+}
+
+// ---------------------------------------------------------------------------
+// Aborting during the stall pause ends the call without touching a provider:
+// the caller's Stop must not be answered by a wait (or an attempt) it cancelled.
+// ---------------------------------------------------------------------------
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+{
+	const store = await makeStore("personal", ["personal"]);
+	const fake = makeFakeProvider([{ status: 503 }, { status: 503 }, { status: 503 }]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "stall-abort", accounts: ["personal"] });
+	const registered = providers["stall-abort"]!;
+	const call = (signal?: AbortSignal) =>
+		collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch, signal }));
+
+	for (let i = 0; i < 3; i += 1) await call();
+	assert.equal(poolStallPauseMs("stall-abort"), 1000, "three failures arm the pause");
+
+	const before = fake.requests.length;
+	const controller = new AbortController();
+	const started = Date.now();
+	const pending = call(controller.signal);
+	setTimeout(() => controller.abort(), 50);
+	const { events } = await pending;
+	assert.ok(Date.now() - started < 950, "the abort ended the wait early");
+	assert.equal((events.at(-1) as { reason?: string }).reason, "aborted", "the caller sees an abort, not a provider error");
+	assert.equal(fake.requests.length, before, "no provider attempt was made during the pause");
+}
