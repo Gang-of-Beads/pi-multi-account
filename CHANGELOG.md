@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.37
 
 - **The aggregate pool is back in the request path on pi-web.** v0.8.36 attached the
   shaping payload hook by registering `stream`/`streamSimple` on the `anthropic` id. That
