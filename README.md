@@ -75,7 +75,7 @@ Imported credentials are read-only: this package never writes into Claude Code's
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space-separated first-run aliases; imports without prompting |
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide `anthropic-<name>` providers |
 | `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable pools |
-| `PI_MULTI_ACCOUNT_SHAPE` | enabled | Set to `0` to stop de-fingerprinting the request body and stripping transcribed reasoning (the billing header still applies). See [Request shaping](#request-shaping) |
+| `PI_MULTI_ACCOUNT_SHAPE` | enabled | Set to `0` to stop de-fingerprinting the request body and stripping transcribed reasoning. The billing header and the errored-tool-result fix still apply. See [Request shaping](#request-shaping) |
 | `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Pool definitions file |
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
@@ -109,7 +109,15 @@ So two things are shaped on OAuth requests (`src/anthropic-shape.ts`):
 - pi's own prompt prose is de-fingerprinted — its verbose preamble is replaced with a neutral minimum, its `docs` section is dropped, and the tools section's "custom tools" filler paragraph goes. The prompt stays in `system[]`; nothing is relocated into a message. A custom or subagent preamble is left alone.
 - `[Assistant thinking]: …` segments are removed from summarization transcripts (`/compact`, turn prefix, branch summary), and the billing header's `cch` is then computed from the text that actually ships.
 
-Only requests that already carry the Claude Code identity block are touched, so API-key accounts and GitHub Copilot are unaffected. `PI_MULTI_ACCOUNT_SHAPE=0` turns off the de-fingerprinting and the reasoning strip; the billing header still applies.
+One rule is not about fingerprints at all, and is not behind the switch: a **failing tool that also returned a picture** is rejected outright with
+
+```text
+400 messages.N.content.0.tool_result: all content must be type `text` if `is_error` is true
+```
+
+pi-ai encodes a tool result as a content-block array whenever it carries an image, and copies the tool's own error flag, so the two together never pass. The errored result is rewritten to text (the image becomes `(see attached image)`, pi-ai's own wording) — the text block already describes the failure, and Anthropic accepts no non-text block there.
+
+Only requests that already carry the Claude Code identity block are touched, so API-key accounts and GitHub Copilot are unaffected. `PI_MULTI_ACCOUNT_SHAPE=0` turns off the de-fingerprinting and the reasoning strip; the billing header and the errored-tool-result fix still apply.
 
 Shaping runs on the provider call itself, not only on pi's `before_provider_request` hook, because `/compact` does not go through the agent loop: it calls the provider stream directly with its own options. Measured on pi 1.1.0, a summarization request reached the wire with neither the billing header nor the strip until the provider-level hook was added.
 
@@ -120,6 +128,7 @@ A successful `/compact` therefore no longer carries the assistant's reasoning in
 - **`anthropic` is absent from `/model`:** add or select an account in `/accounts`, then `/reload`.
 - **Deleted aliases remain:** run `/reload`; session startup removes stale `anthropic-<name>` providers.
 - **`/sub-accounts` finds nothing:** confirm Claude Code is logged in and that Keychain or `~/.claude/.credentials.json` contains credentials.
+- **`400 … all content must be type text if is_error is true`:** a failing tool returned an image; see [Request shaping](#request-shaping). This extension normalizes it on OAuth requests only — with a plain API key it is upstream pi-ai and unfixed.
 - **Another installation rotates shared tokens:** set `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0` on the passive installation.
 - **Requests are blocked as "reverse engineering or duplicating model outputs":** retry once; if it persists across accounts, check that shaping is on (`PI_MULTI_ACCOUNT_SHAPE` is unset) and that pi or a tool has not reworded the prompt anchors (see the drift test in `test/anthropic-shape.test.ts`).
 - **Billing lands on "extra usage" instead of the plan:** the billing header is not reaching the wire. Confirm the account is OAuth (`sk-ant-oat…`) and that the request is `anthropic` or a pool, not a plain API-key provider.

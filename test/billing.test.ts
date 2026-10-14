@@ -257,6 +257,21 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 		assert.ok(!JSON.stringify(effort.messages).includes("Removed system prompt section"), "the shaped-away removal notice is removed");
 	}
 
+	// The new rule must not leak onto payloads this layer is not responsible for:
+	// an API-key request and a Copilot request carry no Claude Code identity, so
+	// neither is touched at all.
+	for (const [label, nonStealth] of [
+		["api-key", { model: "claude-opus-5-5", system: [{ type: "text", text: "be brief" }] }],
+		["copilot", { model: "gpt-5.5", system: [{ type: "text", text: identity }] }],
+	] as const) {
+		const payload: any = {
+			...nonStealth,
+			messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: [{ type: "image" }] }] }],
+		};
+		assert.equal(injectBillingHeader(payload), undefined, `${label} is not a stealth payload`);
+		assert.equal(Array.isArray(payload.messages[0].content[0].content), true, `${label} keeps the errored image blocks`);
+	}
+
 	// A payload with no pi prose and no marker is only given the header.
 	const minimal: any = {
 		model: "claude-opus-5-5",
@@ -297,6 +312,49 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 		assert.equal(typeof bare.system[2], "string", "a string entry stays a string");
 		assert.ok(bare.system[2].startsWith("You are an expert coding assistant.\n"), "and it is the shaped one");
 		assert.ok(!bare.system[2].includes("<docs>"), "the string entry really was shaped");
+	}
+
+	// An errored tool_result carrying an image is rejected by Anthropic outright
+	// (`all content must be type text if is_error is true`), so it is normalized
+	// on the payload - and, unlike the de-fingerprinting, even with the switch off.
+	{
+		const withToolError: any = {
+			model: "claude-opus-5-5",
+			system: [{ type: "text", text: identity }],
+			messages: [
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: [{ type: "tool_use", id: "t1", name: "agent_browser_code", input: {} }] },
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "t1",
+							is_error: true,
+							content: [{ type: "text", text: "failed" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AA" } }],
+						},
+					],
+				},
+			],
+		};
+		injectBillingHeader(withToolError);
+		const result = withToolError.messages[2].content[0];
+		assert.equal(result.is_error, true, "the error flag is kept");
+		assert.equal(result.content, "failed\n\n(see attached image)", "the errored result becomes all text");
+	}
+	{
+		process.env.PI_MULTI_ACCOUNT_SHAPE = "0";
+		try {
+			const switchOff: any = {
+				model: "claude-opus-5-5",
+				system: [{ type: "text", text: identity }],
+				messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: [{ type: "image" }] }] }],
+			};
+			injectBillingHeader(switchOff);
+			assert.equal(switchOff.messages[0].content[0].content, "(see attached image)", "the validity fix is not behind the switch");
+		} finally {
+			delete process.env.PI_MULTI_ACCOUNT_SHAPE;
+		}
 	}
 
 	// A `role: "system"` message with string content takes the same rules, and one

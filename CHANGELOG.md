@@ -36,6 +36,20 @@
   unaffected. The switch turns off the *shape*, never the billing header — an OAuth
   request without that header falls back to the extra-usage lane.
 
+- **A failing tool that returned a picture no longer gets the whole request rejected.**
+  Anthropic answers `400 messages.N.content.0.tool_result: all content must be type text if
+  is_error is true`. pi-ai encodes a tool result as a content-block array whenever the tool
+  returned an image (anthropic-messages.js `convertContentBlocks`) and copies the tool's own
+  error flag, so any failing tool that also returns a screenshot — measured with
+  `pi-agent-browser-native`'s `agent_browser_code` on a real session — is rejected outright,
+  on the *next* request, with no account or model to blame. The errored result is now
+  rewritten to text (`(see attached image)`, pi-ai's own wording) before the request goes
+  out. Verified both ways against the live API: identical payload, 400 unnormalized and 200
+  normalized, and end to end through a real `pi -p` run (`shape.request errorToolResults:1`).
+  This one is a pi-ai bug, not a fingerprint, so it is deliberately **not** behind
+  `PI_MULTI_ACCOUNT_SHAPE` — turning the switch off should not also lose the 400 fix. It
+  applies to OAuth requests only, which is where this extension owns the payload.
+
 ## 0.8.35
 
 - **A session-start sync that cannot fetch keeps the cached context windows.** With

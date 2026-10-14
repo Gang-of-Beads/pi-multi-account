@@ -27,6 +27,7 @@ import {
 	shapeSystemPromptText,
 	shapeSystemUpdateText,
 	stripTranscribedThinking,
+	textifyErrorToolResult,
 	TRANSCRIPT_THINKING_MARKER,
 } from "./anthropic-shape.ts";
 import { highestVersion, isCliVersion, probeCliVersion } from "./cli-version.ts";
@@ -263,6 +264,21 @@ interface AnthropicPayload {
 	messages?: unknown;
 }
 
+/**
+ * Anthropic rejects a non-text block inside an errored `tool_result`; see
+ * anthropic-shape.ts for the shape and the measurement.
+ */
+function textifyErrorToolResults(messages: Message[]): number {
+	let count = 0;
+	for (const message of messages) {
+		if (!Array.isArray(message.content)) continue;
+		for (const block of message.content) {
+			if (textifyErrorToolResult(block as Record<string, unknown>)) count += 1;
+		}
+	}
+	return count;
+}
+
 function isClaudeModel(model: unknown): model is string {
 	return typeof model === "string" && model.toLowerCase().includes("claude");
 }
@@ -398,13 +414,20 @@ export function injectBillingHeader(payload: unknown): AnthropicPayload | undefi
 		return undefined;
 	}
 
-	// Already injected — leave it untouched (handler idempotency).
-	if (system.some((e) => entryText(e).startsWith(BILLING_PREFIX))) {
-		return undefined;
-	}
-
 	const messages = p.messages as Message[];
 
+	// Deliberately outside the PI_MULTI_ACCOUNT_SHAPE gate: this one is validity,
+	// not de-fingerprinting — without it Anthropic rejects the whole request, and a
+	// user turning the switch off to debug should not also lose the 400 fix.
+	const errorToolResults = textifyErrorToolResults(messages);
+
+	// Run before the idempotency return, so a payload that already carries the
+	// header still gets normalized.
+	if (system.some((e) => entryText(e).startsWith(BILLING_PREFIX))) {
+		return errorToolResults > 0 ? p : undefined;
+	}
+
+	let changed: Record<string, number> = { errorToolResults };
 	if (shapingEnabled()) {
 		// Order matters: the `cch` hash describes the first user message, so the
 		// transcript strip has to land before the header is computed.
@@ -417,15 +440,16 @@ export function injectBillingHeader(payload: unknown): AnthropicPayload | undefi
 				? message.content.includes(TRANSCRIPT_THINKING_MARKER)
 				: (message.content ?? []).some((block) => (block.text ?? "").includes(TRANSCRIPT_THINKING_MARKER)),
 		);
-		const changed = {
+		changed = {
+			...changed,
 			...shapeMessages(messages),
 			...shapeSystem(system),
 			summary: system.some((entry) => entryText(entry).includes(SUMMARIZER_ANCHOR)) ? 1 : 0,
 			hadThinkingMarker: lookedLikeTranscript ? 1 : 0,
 		};
-		if (Object.values(changed).some((value) => value > 0)) {
-			logDebug("shape.request", { ...changed, model: p.model as string });
-		}
+	}
+	if (Object.values(changed).some((value) => value > 0)) {
+		logDebug("shape.request", { ...changed, model: p.model as string });
 	}
 
 	const billingHeader = buildBillingHeaderValue(messages, getCliVersion(), getEntrypoint());

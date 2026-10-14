@@ -21,6 +21,7 @@ import {
 	shapeSystemPromptText,
 	shapeSystemUpdateText,
 	stripTranscribedThinking,
+	textifyErrorToolResult,
 } from "../src/anthropic-shape.ts";
 
 const PI_PREAMBLE = `${PI_DEFAULT_PROMPT_PREFIX} You help users by reading files, executing commands, editing code, and writing new files.`;
@@ -167,6 +168,52 @@ const transcript = (marker: string) =>
 	const quoted = "Look at this:\n\n<conversation>\n[Assistant thinking]: hmm\n</conversation>";
 	const { removed } = stripTranscribedThinking(quoted);
 	assert.equal(removed, 1, "a quoted envelope is stripped too");
+}
+
+// --- errored tool_result must be all text -------------------------------
+// Anthropic: `all content must be type `text` if `is_error` is true`. pi-ai emits
+// a block array with an image whenever a tool returned a picture, and copies the
+// tool's own error flag, so a failing screenshot tool is rejected outright.
+{
+	const withImage = {
+		type: "tool_result",
+		tool_use_id: "t1",
+		is_error: true,
+		content: [{ type: "text", text: "{\"success\": false}" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AA" } }],
+	};
+	assert.equal(textifyErrorToolResult(withImage), true, "an errored image result is rewritten");
+	assert.equal(typeof withImage.content, "string", "the content becomes a string");
+	assert.equal(withImage.content, "{\"success\": false}\n\n(see attached image)", "text is kept, the image becomes pi-ai's own placeholder");
+	assert.equal(withImage.tool_use_id, "t1", "no other field is touched");
+	assert.equal(withImage.is_error, true, "the error flag stays set");
+
+	// Image-only: the placeholder is still a legitimate all-text result.
+	const imageOnly = { type: "tool_result", is_error: true, content: [{ type: "image" }] };
+	assert.equal(textifyErrorToolResult(imageOnly), true);
+	assert.equal(imageOnly.content, "(see attached image)");
+
+	// A non-image, non-text block still has to go; name it rather than lose it.
+	const odd = { type: "tool_result", is_error: true, content: [{ type: "text", text: "a" }, { type: "tool_reference" }] };
+	assert.equal(textifyErrorToolResult(odd), true);
+	assert.equal(odd.content, "a\n\n[tool_reference]");
+
+	// Untouched cases: already all text, not an error, not a tool_result at all,
+	// and content that is already a plain string.
+	assert.equal(textifyErrorToolResult({ type: "tool_result", is_error: true, content: [{ type: "text", text: "x" }] }), false, "an all-text error result is left alone");
+	const ok = { type: "tool_result", is_error: false, content: [{ type: "text", text: "x" }, { type: "image" }] };
+	assert.equal(textifyErrorToolResult(ok), false, "a successful result keeps its image");
+	assert.equal(Array.isArray(ok.content), true, "and keeps it as blocks");
+	assert.equal(textifyErrorToolResult({ type: "tool_result", content: [{ type: "image" }] }), false, "a missing is_error is not an error");
+	assert.equal(textifyErrorToolResult({ type: "text", text: "x" }), false, "a text block is not a tool_result");
+	const plain = { type: "tool_result", is_error: true, content: "already a string" };
+	assert.equal(textifyErrorToolResult(plain), false, "string content is already all text");
+	assert.equal(plain.content, "already a string", "and is untouched");
+
+	// Idempotent, and an empty errored result stays empty rather than gaining text.
+	const twice = { type: "tool_result", is_error: true, content: [{ type: "image" }] };
+	textifyErrorToolResult(twice);
+	assert.equal(textifyErrorToolResult(twice), false, "a second pass is a no-op");
+	assert.equal(textifyErrorToolResult({ type: "tool_result", is_error: true, content: [] }), false, "an empty result is fine as-is");
 }
 
 // --- anchor drift -----------------------------------------------------------

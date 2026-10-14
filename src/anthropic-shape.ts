@@ -233,3 +233,35 @@ export function stripTranscribedThinking(text: string): { text: string; removed:
 	}
 	return { text: out + text.slice(cursor), removed };
 }
+
+/** Copied from pi-ai's `convertContentBlocks`, so a rewritten result reads like an untouched one. */
+const IMAGE_PLACEHOLDER = "(see attached image)";
+
+/**
+ * Make an errored `tool_result` all-text, which Anthropic requires.
+ *
+ * `400 messages.N.content.0.tool_result: all content must be type `text` if
+ * `is_error` is true`. pi-ai encodes a tool result as a content-block array
+ * whenever the tool returned an image (anthropic-messages.js `convertContentBlocks`),
+ * and sets `is_error` straight from the tool's own flag, so the two together —
+ * any failing tool that also returns a picture — are rejected. Measured on
+ * pi 1.1.0 with pi-agent-browser-native's `agent_browser_code`, whose failure
+ * result carries a screenshot.
+ *
+ * The image has to go: Anthropic accepts no non-text block in an errored result,
+ * and the text block already carries the failure. Returns whether it rewrote
+ * anything.
+ */
+export function textifyErrorToolResult(block: Record<string, unknown>): boolean {
+	if (block["type"] !== "tool_result" || !block["is_error"] || !Array.isArray(block["content"])) return false;
+	const content = block["content"] as Array<Record<string, unknown> | undefined>;
+	if (!content.some((inner) => inner?.["type"] !== "text")) return false;
+	block["content"] = content
+		.map((inner) => {
+			if (inner?.["type"] === "text" && typeof inner["text"] === "string") return inner["text"];
+			return inner?.["type"] === "image" ? IMAGE_PLACEHOLDER : `[${String(inner?.["type"] ?? "unknown")}]`;
+		})
+		.filter((part) => part.length > 0)
+		.join("\n\n");
+	return true;
+}
