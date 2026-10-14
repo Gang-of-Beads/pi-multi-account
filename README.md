@@ -5,6 +5,7 @@ A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription bil
 - Manage Anthropic, GitHub Copilot, and OpenAI Codex accounts with `/accounts`.
 - Import existing Claude Code sign-ins and expose pinned `anthropic-<name>` providers in `/model`.
 - Send Claude Code-style billing metadata for Anthropic OAuth (`sk-ant-oat...`) requests.
+- Shape the request body so Anthropic's payload classifier stops answering with `You're out of extra usage` or the `reasoning_extraction` refusal. See [Request shaping](#request-shaping).
 - Create aggregate pools that fail over to another Anthropic account on 401/403/408/429/5xx errors before output starts.
 
 ## Compatibility
@@ -74,6 +75,7 @@ Imported credentials are read-only: this package never writes into Claude Code's
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space-separated first-run aliases; imports without prompting |
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide `anthropic-<name>` providers |
 | `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable pools |
+| `PI_MULTI_ACCOUNT_SHAPE` | enabled | Set to `0` to stop de-fingerprinting the request body and stripping transcribed reasoning (the billing header still applies). See [Request shaping](#request-shaping) |
 | `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Pool definitions file |
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
@@ -89,16 +91,42 @@ The account store is `~/.pi/agent/pi-accounts.json`. Each Codex account's contex
 tail -f ~/.pi/agent/pi-multi-account.log
 ```
 
+## Request shaping
+
+Anthropic's server reads the request *body* to decide what produced it — not the user-agent, headers or TLS. Two payload shapes are answered with a refusal that names neither the model nor the account:
+
+```text
+400 invalid_request_error: You're out of extra usage.
+   … or …
+This request was blocked as it seems to violate Anthropic's Terms of Service
+restrictions on reverse engineering or duplicating model outputs.
+```
+
+The second one is Anthropic's `reasoning_extraction` category, and it fires when the model's own reasoning reaches it as **plain text**. pi does that on purpose in every summarization transcript, which is why `/compact` is the usual place to see it. Measured on `claude-opus-5-5`, a summarization request carrying `[Assistant thinking]: ` was refused 5 times out of 5; the same request with those segments removed was accepted 5 times out of 5.
+
+So two things are shaped on OAuth requests (`src/anthropic-shape.ts`):
+
+- pi's own prompt prose is de-fingerprinted — its verbose preamble is replaced with a neutral minimum, its `docs` section is dropped, and the tools section's "custom tools" filler paragraph goes. The prompt stays in `system[]`; nothing is relocated into a message. A custom or subagent preamble is left alone.
+- `[Assistant thinking]: …` segments are removed from summarization transcripts (`/compact`, turn prefix, branch summary), and the billing header's `cch` is then computed from the text that actually ships.
+
+Only requests that already carry the Claude Code identity block are touched, so API-key accounts and GitHub Copilot are unaffected. `PI_MULTI_ACCOUNT_SHAPE=0` turns off the de-fingerprinting and the reasoning strip; the billing header still applies.
+
+Shaping runs on the provider call itself, not only on pi's `before_provider_request` hook, because `/compact` does not go through the agent loop: it calls the provider stream directly with its own options. Measured on pi 1.1.0, a summarization request reached the wire with neither the billing header nor the strip until the provider-level hook was added.
+
+A successful `/compact` therefore no longer carries the assistant's reasoning into the summary. That is the deliberate trade: the alternative is a summarization request that is refused outright.
+
 ## Troubleshooting
 
 - **`anthropic` is absent from `/model`:** add or select an account in `/accounts`, then `/reload`.
 - **Deleted aliases remain:** run `/reload`; session startup removes stale `anthropic-<name>` providers.
 - **`/sub-accounts` finds nothing:** confirm Claude Code is logged in and that Keychain or `~/.claude/.credentials.json` contains credentials.
 - **Another installation rotates shared tokens:** set `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0` on the passive installation.
+- **Requests are blocked as "reverse engineering or duplicating model outputs":** retry once; if it persists across accounts, check that shaping is on (`PI_MULTI_ACCOUNT_SHAPE` is unset) and that pi or a tool has not reworded the prompt anchors (see the drift test in `test/anthropic-shape.test.ts`).
+- **Billing lands on "extra usage" instead of the plan:** the billing header is not reaching the wire. Confirm the account is OAuth (`sk-ant-oat…`) and that the request is `anthropic` or a pool, not a plain API-key provider.
 
 ## Security
 
-This package makes eligible Anthropic OAuth requests resemble Claude Code subscription traffic. Use it only when permitted by Anthropic's terms and your subscription. Pi extensions have full local system permissions; install only code you trust.
+This package makes eligible Anthropic OAuth requests resemble Claude Code subscription traffic — headers, user-agent, the billing header block, and the request body (see [Request shaping](#request-shaping)). Use it only when permitted by Anthropic's terms and your subscription. Pi extensions have full local system permissions; install only code you trust.
 
 ## Development
 
@@ -112,7 +140,6 @@ npm install
 npx tsc --noEmit
 for test in test/*.test.ts; do npx jiti "$test"; done
 ```
-
 The pi entrypoint is `src/index.ts`; local testing works with:
 
 ```bash
@@ -123,3 +150,4 @@ pi -e /absolute/path/to/pi-multi-account
 
 - Multi-account runtime: [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts)
 - Billing and credential-discovery code adapted from [`pi-claude-auth`](https://github.com/pankajudhas81/pi-claude-auth) (MIT); see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
+- Request shaping (`src/anthropic-shape.ts`) ported in spirit from [`gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth) (MIT)

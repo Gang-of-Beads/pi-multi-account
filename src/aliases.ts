@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earen
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicAdapter } from "./adapters.ts";
-import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
+import { applyUserAgentOverride, buildUserAgent, withShapingOptions } from "./billing.ts";
 import { credentialSummary, logDebug, logError } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 import { isCredentialSuspect, REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
@@ -126,6 +126,15 @@ function registerAliasProvider(
 		applyUserAgentOverride(fixedInit.headers as Headers);
 		return realFetch(input, fixedInit as RequestInit);
 	};
+	// Same reason as the pool: compaction reaches the provider stream directly,
+	// with options that carry no payload hook.
+	const aliasOptions = (options: unknown): Record<string, unknown> => {
+		const record = withShapingOptions(options);
+		return {
+			...record,
+			fetch: uaFixFetch(typeof record.fetch === "function" ? (record.fetch as typeof fetch) : globalThis.fetch),
+		};
+	};
 	pi.unregisterProvider(id);
 	pi.registerProvider({
 		id,
@@ -207,24 +216,9 @@ function registerAliasProvider(
 						baseProvider.filterModels?.(providerModels as any, credential) ?? providerModels,
 			  }
 			: {}),
-		stream: (model, context, options) =>
-			baseProvider.stream(model as never, context, {
-				...(options as Record<string, unknown>),
-				fetch: uaFixFetch(
-					typeof (options as { fetch?: typeof fetch } | undefined)?.fetch === "function"
-						? (options as { fetch: typeof fetch }).fetch
-						: globalThis.fetch,
-				),
-			} as never),
+		stream: (model, context, options) => baseProvider.stream(model as never, context as never, aliasOptions(options) as never),
 		streamSimple: (model, context, options) =>
-			baseProvider.streamSimple(model as never, context, {
-				...(options as Record<string, unknown>),
-				fetch: uaFixFetch(
-					typeof (options as { fetch?: typeof fetch } | undefined)?.fetch === "function"
-						? (options as { fetch: typeof fetch }).fetch
-						: globalThis.fetch,
-				),
-			} as never),
+			baseProvider.streamSimple(model as never, context as never, aliasOptions(options) as never),
 	});
 }
 

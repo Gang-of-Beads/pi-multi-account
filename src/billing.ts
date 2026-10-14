@@ -1,21 +1,37 @@
 /**
- * Claude Code subscription billing: user-agent override and
- * `x-anthropic-billing-header` payload injection.
+ * Claude Code subscription billing: user-agent override,
+ * `x-anthropic-billing-header` payload injection, and the request shaping that
+ * keeps the payload from looking like third-party harness traffic.
  *
  * Ported from pi-claude-auth (MIT, github.com/pankajudhas81/pi-claude-auth,
- * signing.ts + transforms.ts) with minor restructuring only.
+ * signing.ts + transforms.ts) with minor restructuring only; the shaping in
+ * anthropic-shape.ts is ported in spirit from gotgenes/pi-anthropic-auth (MIT).
  *
- * Why this exists: pi's built-in Anthropic provider already sends the Claude
- * Code identity block, beta flags and an OAuth Bearer token, but it sends a
- * bare `claude-cli/<version>` user-agent and no billing header. Anthropic's
- * plan-billing validation rejects that combination, so OAuth requests are
- * billed against pay-as-you-go API credits / "extra usage" instead of the
- * Claude Pro/Max subscription plan. This module restores the full Claude Code
- * request identity so plan billing applies.
+ * Why the billing header exists: pi's built-in Anthropic provider already sends
+ * the Claude Code identity block, beta flags and an OAuth Bearer token, but it
+ * sends a bare `claude-cli/<version>` user-agent and no billing header.
+ * Anthropic's plan-billing validation rejects that combination, so OAuth
+ * requests are billed against pay-as-you-go API credits / "extra usage" instead
+ * of the Claude Pro/Max subscription plan. This module restores the full Claude
+ * Code request identity so plan billing applies.
+ *
+ * Why the shaping exists: Anthropic's server-side classifier verdicts a request
+ * on its payload content, and answers a pi-shaped one with either the misleading
+ * `400 You're out of extra usage` or the `reasoning_extraction` refusal
+ * ("reverse engineering or duplicating model outputs"). See anthropic-shape.ts for
+ * what is shaped and for the measurements behind it.
  */
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	shapeSystemPromptText,
+	shapeSystemUpdateText,
+	stripTranscribedThinking,
+	TRANSCRIPT_THINKING_MARKER,
+} from "./anthropic-shape.ts";
 import { highestVersion, isCliVersion, probeCliVersion } from "./cli-version.ts";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { logDebug } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 
 const BILLING_SALT = "59cf53e54c78";
@@ -193,8 +209,51 @@ export function buildBillingHeaderValue(
 	);
 }
 
+/**
+ * pi's built-in Anthropic provider, captured once so the pass-through stays honest
+ * (the registration below is not the built-in, so there is no recursion).
+ */
+const base = (
+	builtinProviders() as Array<{ id: string; stream?: unknown; streamSimple?: unknown }>
+).find((provider) => provider.id === "anthropic");
+
+/** Pass-through stream wrappers that only add the shaping payload hook. */
+const shapingStreamHost = base?.stream
+	? {
+			stream: (model: unknown, context: unknown, options: unknown) =>
+				(base.stream as Function)(model, context, withShapingOptions(options)),
+			streamSimple: (model: unknown, context: unknown, options: unknown) =>
+				(base.streamSimple as Function)(model, context, withShapingOptions(options)),
+		}
+	: {};
+
+/**
+ * The provider-call options with the shaping payload hook attached.
+ *
+ * Unconditional, even with `PI_MULTI_ACCOUNT_SHAPE=0`: that switch turns off the
+ * *shaping*, which `injectBillingHeader` reads itself. Gating here would also drop
+ * the billing header on this route - and this route is the only one a compaction
+ * request has. Shared with aliases.ts, which adds only its fetch wrapper.
+ */
+export function withShapingOptions(options: unknown): Record<string, unknown> {
+	const record = (options ?? {}) as Record<string, unknown>;
+	return { ...record, onPayload: withShapingOnPayload(record.onPayload as never) };
+}
+
 const BILLING_PREFIX = "x-anthropic-billing-header";
 const CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/** Set `PI_MULTI_ACCOUNT_SHAPE=0` to leave pi's request shape alone (billing header still applies). */
+export const SHAPING_ENV = "PI_MULTI_ACCOUNT_SHAPE";
+
+/** Marks pi's summarization system prompt, so a debug line can say what the request was. */
+const SUMMARIZER_ANCHOR = "You are a context summarization assistant.";
+
+/** Whether request shaping (prompt de-fingerprinting + thinking strip) is on. */
+export function shapingEnabled(): boolean {
+	const value = process.env[SHAPING_ENV];
+	return !(value === "0" || value?.toLowerCase() === "off" || value?.toLowerCase() === "false");
+}
 
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>;
 
@@ -217,17 +276,109 @@ function entryText(entry: unknown): string {
 	return "";
 }
 
+/** Shape every pi-authored system block in place, dropping blocks that shape away. */
+function shapeSystem(system: Array<SystemEntry | string>): { shaped: number; dropped: number } {
+	let shaped = 0;
+	let dropped = 0;
+	for (let index = system.length - 1; index >= 0; index -= 1) {
+		const entry = system[index]!;
+		const text = entryText(entry);
+		// The injected billing header and the identity line are not pi prose.
+		if (text.length === 0 || text.startsWith(BILLING_PREFIX) || text.startsWith(CC_IDENTITY)) continue;
+		const next = shapeSystemPromptText(text);
+		if (next.length === 0) {
+			system.splice(index, 1);
+			dropped += 1;
+		} else if (next !== text) {
+			// `system` is normally blocks, but Anthropic also accepts a bare string.
+			if (typeof entry === "string") system[index] = next;
+			else (entry as { text: string }).text = next;
+			shaped += 1;
+		}
+	}
+	return { shaped, dropped };
+}
+
 /**
- * Inject the Claude Code billing header into an Anthropic request payload as
- * the first system entry.
+ * Shape mid-conversation system messages and strip transcribed reasoning.
+ *
+ * pi re-sends changed prompt sections as `role: "system"` messages on models
+ * that accept them, and puts every summarization transcript in a user message;
+ * both carry pi prose that the leading-prompt rules would otherwise miss.
+ */
+function shapeMessages(messages: Message[]): { droppedUpdates: number; stripped: number } {
+	let droppedUpdates = 0;
+	let stripped = 0;
+	const shaped: Message[] = [];
+	for (const message of messages) {
+		if (message.role === "system") {
+			// An update whose every part shaped away is noise. An empty `content` is
+			// not one of those: pi sends content-less system messages to carry a
+			// per-message effort, and dropping them would run the request at the wrong
+			// effort level.
+			if (Array.isArray(message.content)) {
+				const blocks = message.content.flatMap((block) => {
+					if (block.type !== "text" || typeof block.text !== "string") return [block];
+					const text = shapeSystemUpdateText(block.text);
+					return text === undefined ? [] : [{ ...block, text }];
+				});
+				if (blocks.length === 0 && message.content.length > 0) {
+					droppedUpdates += 1;
+					continue;
+				}
+				message.content = blocks;
+				shaped.push(message);
+				continue;
+			}
+			if (typeof message.content === "string") {
+				const text = shapeSystemUpdateText(message.content);
+				if (text === undefined) {
+					droppedUpdates += 1;
+					continue;
+				}
+				message.content = text;
+				shaped.push(message);
+				continue;
+			}
+		}
+		if (Array.isArray(message.content)) {
+			for (const block of message.content) {
+				if (block.type !== "text" || typeof block.text !== "string") continue;
+				const result = stripTranscribedThinking(block.text);
+				block.text = result.text;
+				stripped += result.removed;
+			}
+		} else if (typeof message.content === "string") {
+			const result = stripTranscribedThinking(message.content);
+			message.content = result.text;
+			stripped += result.removed;
+		}
+		shaped.push(message);
+	}
+	messages.length = 0;
+	messages.push(...shaped);
+	return { droppedUpdates, stripped };
+}
+
+/**
+ * Prepare one Anthropic OAuth request: inject the Claude Code billing header as
+ * the first system entry, shape the pi prose out of it, strip transcribed
+ * reasoning, and fix the shapes Anthropic rejects outright.
+ *
+ * Three jobs under one entry point because they share the same gate (an OAuth
+ * request) and the same ordering constraint (`cch` describes the first user
+ * message, so every message edit has to land before the header is computed).
  *
  * pi's built-in Anthropic provider already sends the Claude Code identity,
  * beta flags, and user-agent for OAuth tokens, but it does not send the
  * `x-anthropic-billing-header` system block. That block is what routes billing
  * to the Claude Pro/Max subscription instead of pay-as-you-go API credits.
  *
- * Returns the mutated payload when a billing header was injected, or undefined
- * to leave the payload unchanged (non-Claude requests, or already injected).
+ * Returns the mutated payload when it changed anything: the billing header was
+ * injected, or an errored tool_result was rewritten on an already-billed
+ * request (normalization runs before the idempotency return). Returns
+ * undefined for non-Claude requests or an already-billed payload with nothing
+ * to normalize, leaving it unchanged.
  */
 export function injectBillingHeader(payload: unknown): AnthropicPayload | undefined {
 	if (!payload || typeof payload !== "object") return undefined;
@@ -236,7 +387,7 @@ export function injectBillingHeader(payload: unknown): AnthropicPayload | undefi
 	if (!isClaudeModel(p.model)) return undefined;
 	if (!Array.isArray(p.messages)) return undefined;
 
-	const system: SystemEntry[] = Array.isArray(p.system) ? (p.system as SystemEntry[]) : [];
+	const system: Array<SystemEntry | string> = Array.isArray(p.system) ? (p.system as SystemEntry[]) : [];
 
 	// Only inject when pi is in OAuth stealth mode, signalled by its Claude
 	// Code identity block. This avoids touching plain API-key requests (which
@@ -252,10 +403,30 @@ export function injectBillingHeader(payload: unknown): AnthropicPayload | undefi
 		return undefined;
 	}
 
-	const messages = p.messages as Array<{
-		role?: string;
-		content?: string | Array<{ type?: string; text?: string }>;
-	}>;
+	const messages = p.messages as Message[];
+
+	if (shapingEnabled()) {
+		// Order matters: the `cch` hash describes the first user message, so the
+		// transcript strip has to land before the header is computed.
+		// Read the marker before shaping removes it. Why a zero-strip line is worth
+		// keeping at all: a summarization request carries a different system prompt and
+		// a different message list from a normal turn, so "the strip did not fire" has
+		// to be tellable apart from "there was nothing to strip".
+		const lookedLikeTranscript = messages.some((message) =>
+			typeof message.content === "string"
+				? message.content.includes(TRANSCRIPT_THINKING_MARKER)
+				: (message.content ?? []).some((block) => (block.text ?? "").includes(TRANSCRIPT_THINKING_MARKER)),
+		);
+		const changed = {
+			...shapeMessages(messages),
+			...shapeSystem(system),
+			summary: system.some((entry) => entryText(entry).includes(SUMMARIZER_ANCHOR)) ? 1 : 0,
+			hadThinkingMarker: lookedLikeTranscript ? 1 : 0,
+		};
+		if (Object.values(changed).some((value) => value > 0)) {
+			logDebug("shape.request", { ...changed, model: p.model as string });
+		}
+	}
 
 	const billingHeader = buildBillingHeaderValue(messages, getCliVersion(), getEntrypoint());
 
@@ -263,46 +434,42 @@ export function injectBillingHeader(payload: unknown): AnthropicPayload | undefi
 	// cache_control so it does not consume a cache breakpoint.
 	p.system = [{ type: "text", text: billingHeader }, ...system];
 
-	// Relocate non-core system entries to user messages.
-	// Anthropic's API validates the system prompt for OAuth-authenticated
-	// requests that use Claude Code billing. Third-party system prompts
-	// (like pi's) trigger a 400 "out of extra usage" rejection when
-	// they appear inside the system[] array alongside the identity prefix.
-	//
-	// Work-around: keep only the billing header and identity prefix in
-	// system[], and prepend all other system content to the first user
-	// message where it is functionally equivalent but avoids the check.
-	const keptSystem: SystemEntry[] = [];
-	const movedTexts: string[] = [];
-	for (const entry of p.system as SystemEntry[]) {
-		const txt = entryText(entry);
-		if (txt.startsWith(BILLING_PREFIX) || txt.startsWith(CC_IDENTITY)) {
-			keptSystem.push(entry);
-		} else if (txt.length > 0) {
-			movedTexts.push(txt);
-		}
-	}
-
-	if (movedTexts.length > 0) {
-		const firstUser = (
-			p.messages as Array<{
-				role?: string;
-				content?: string | Array<{ type?: string; text?: string }>;
-			}>
-		).find((m) => m.role === "user");
-		if (firstUser) {
-			p.system = keptSystem;
-			const prefix = movedTexts.join("\n\n");
-			const content = firstUser.content;
-			if (typeof content === "string") {
-				firstUser.content = prefix + "\n\n" + content;
-			} else if (Array.isArray(content)) {
-				content.unshift({ type: "text", text: prefix });
-			}
-		}
-	}
-
 	return p;
+}
+
+/**
+ * Add the shaping payload hook to one provider call's options, keeping any hook
+ * the caller already set.
+ *
+ * Why this exists on top of `before_provider_request`: that hook is driven by
+ * pi's *agent loop* (`onPayload`), and compaction does not run through it — it
+ * calls the provider stream directly with its own options. Measured on pi 1.1.0:
+ * every `/compact` summarization request reached the wire with no billing header
+ * and no shaping, which is precisely the request the refusal fires on. A provider
+ * -level `onPayload` is the seam that covers both routes, and shaping is
+ * idempotent, so the two routes may both run for one payload.
+ */
+export function withShapingOnPayload(
+	onPayload: ((payload: unknown, model?: unknown) => unknown) | undefined,
+): (payload: unknown, model?: unknown) => unknown {
+	return (payload, model) => {
+		const next = onPayload?.(payload, model);
+		// A synchronous `before_provider_request` returns the payload; an async one
+		// returns a promise. Both are supported, so resolve only when needed.
+		if (next instanceof Promise) {
+			return next.then((resolved) => shapeOrSame(resolved ?? payload));
+		}
+		return shapeOrSame((next as unknown) ?? payload);
+	};
+}
+
+function shapeOrSame(payload: unknown): unknown {
+	try {
+		return injectBillingHeader(payload) ?? payload;
+	} catch (error) {
+		console.warn("pi-multi-account: request preparation failed:", errorMessage(error));
+		return payload;
+	}
 }
 
 export function registerBillingLayer(pi: ExtensionAPI): void {
@@ -311,8 +478,12 @@ export function registerBillingLayer(pi: ExtensionAPI): void {
 	// the `(external, <entrypoint>)` form is required for subscription billing.
 	// (Alias providers set their own user-agent in aliases.ts.)
 	pi.registerProvider("anthropic", {
+		api: "anthropic-messages",
 		headers: { "user-agent": buildUserAgent() },
-	});
+		// Native (no-pool) requests need the payload hook too: a pool replaces this
+		// stream, but without one, compaction would otherwise escape shaping.
+		...shapingStreamHost,
+	} as unknown as Parameters<typeof pi.registerProvider>[1]);
 
 	// Inject the x-anthropic-billing-header system block. Only fires for
 	// Claude-model OAuth payloads that already carry the "You are Claude

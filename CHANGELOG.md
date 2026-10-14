@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- **Anthropic stops answering OAuth requests with "reverse engineering or duplicating
+  model outputs".** That text is Anthropic's `reasoning_extraction` refusal category, it
+  arrives as a `200` whose SSE stream then fails, and it fires when the model's own
+  reasoning reaches the server as *plain text* — which is exactly what pi's
+  summarization transcript does on purpose (`[Assistant thinking]: …`). Measured on
+  `claude-opus-5-5`: a summarization request carrying the marker was refused 5/5, the
+  same request with those segments removed was accepted 5/5. `[Assistant thinking]:`
+  segments are now stripped from summarization payloads (`/compact`, turn prefix, branch
+  summary) before the billing header is computed, so `cch` still describes what ships.
+
+  This needed a second seam. `before_provider_request` is driven by pi's agent loop, and
+  compaction is not part of it — it calls the provider stream directly with its own
+  options, so every summarization request used to reach the wire with no billing header
+  and no shaping at all (measured on pi 1.1.0). Shaping now also hangs off the provider
+  call's `onPayload`, on the native provider, every `anthropic-<name>` alias and every
+  pool; the two routes compose and the result is idempotent. Verified against a real
+  `pi -p` compaction: `shape.request summary:true stripped:1`, with the account's 429 as
+  the only failure and no refusal.
+
+- **The request body is de-fingerprinted on OAuth requests.** Anthropic's verdict is
+  payload-based, not header- or TLS-based: pi's verbose preamble is replaced with a
+  neutral four-line prompt, its `docs` section is dropped and the tools section's
+  "custom tools" filler paragraph goes. A custom or subagent preamble is left alone, and
+  the prompt now stays in `system[]` instead of being relocated into the first user
+  message — the layout both `gotgenes/pi-anthropic-auth` and `Sarrius/pi-multi-account`
+  settled on, and the one Claude Code itself uses. Mid-conversation section updates take
+  the same rules, so a later `tools` change cannot re-introduce what the leading prompt
+  gave up.
+
+  Both halves are off with `PI_MULTI_ACCOUNT_SHAPE=0`; only requests that already carry
+  the Claude Code identity block are touched, so API-key and Copilot traffic is
+  unaffected. The switch turns off the *shape*, never the billing header — an OAuth
+  request without that header falls back to the extra-usage lane.
+
 ## 0.8.35
 
 - **A session-start sync that cannot fetch keeps the cached context windows.** With

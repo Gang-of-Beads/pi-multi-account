@@ -3,6 +3,9 @@
   "version": "0.8.35",
   "description": "Multi-account OAuth switching and Claude subscription billing for pi",
   "license": "MIT",
+  "scripts": {
+    "test": "for f in test/*.test.ts; do npx jiti \"$f\" || exit 1; done"
+  },
   "type": "module",
   "keywords": [
     "pi-package",

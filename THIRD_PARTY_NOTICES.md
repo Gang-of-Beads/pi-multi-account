@@ -39,6 +39,44 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## gotgenes/pi-anthropic-auth
+
+- Repository: https://github.com/gotgenes/pi-anthropic-auth
+- License: MIT
+- Adapted files in this repository:
+  - `src/anthropic-shape.ts`
+
+`src/anthropic-shape.ts` reimplements that project's system-prompt sanitizer and
+its summarization-transcript reasoning strip. It is written against this package's
+own shaping entry point rather than copied verbatim (the upstream version parses
+pi's prompt into typed chunks; this one scans the rendered string), so the
+algorithm, the anchor strings and the measured reasoning behind them are what came
+across.
+
+```
+MIT License
+
+Copyright (c) 2026 gotgenes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## @narumitw/pi-accounts
 
 - Package: https://www.npmjs.com/package/@narumitw/pi-accounts

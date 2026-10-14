@@ -12,7 +12,8 @@
  *   accounts-menu.ts        /accounts (login, re-login, switch, rename, remove)
  *   subscription-import.ts  /sub-accounts, /sub-import, first-run import
  *   session-state.ts        which account a session uses + footer status
- *   billing.ts              Claude Code user-agent and billing-header injection
+ *   billing.ts              Claude Code user-agent, billing header, request shaping
+ *   anthropic-shape.ts      prompt de-fingerprinting + transcript reasoning strip
  *   names.ts, errors.ts     small shared helpers
  *
  * What it does:
@@ -22,7 +23,11 @@
  * 2. Claude subscription billing: whenever an Anthropic OAuth token
  *    (`sk-ant-oat…`) is used, requests carry the full Claude Code user-agent and
  *    the `x-anthropic-billing-header` system block, so usage is billed to the
- *    Claude Pro/Max plan instead of pay-as-you-go API credits.
+ *    Claude Pro/Max plan instead of pay-as-you-go API credits. The same hook
+ *    shapes the body — pi's prompt prose is de-fingerprinted and summarization
+ *    transcripts drop their transcribed reasoning — so Anthropic's payload
+ *    classifier stops answering `You're out of extra usage` / the
+ *    `reasoning_extraction` refusal. Disable with PI_MULTI_ACCOUNT_SHAPE=0.
  *
  * Extras:
  *   - User-defined aggregate pools: /pool-create names a provider that tries

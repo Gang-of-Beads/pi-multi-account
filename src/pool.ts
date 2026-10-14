@@ -56,7 +56,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { anthropicAdapter } from "./adapters.ts";
 import { activeAnthropicToken, stripRefusedBoundsInMessages } from "./provider-schema.ts";
-import { applyUserAgentOverride, buildUserAgent } from "./billing.ts";
+import { applyUserAgentOverride, buildUserAgent, withShapingOnPayload } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 import { expandPoolAccounts, NATIVE_POOL_NAME, readPools, type PoolDefinition } from "./pools-store.ts";
@@ -344,6 +344,9 @@ export function createPoolRuntime(
 			...(options_ ?? {}),
 			apiKey: credential.access,
 			fetch: captureFetch,
+			// A pool call can arrive with no payload hook at all (compaction calls the
+			// provider stream directly), so the pool adds its own.
+			onPayload: withShapingOnPayload(options_?.onPayload as never),
 		};
 		const events =
 			kind === "stream"
