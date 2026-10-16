@@ -14,6 +14,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { logError, logInfo } from "./debug-log.ts";
 
 /** The one name that overrides pi's native Anthropic provider. */
@@ -40,7 +41,7 @@ interface PoolsFile {
 export function poolsFilePath(): string {
 	return (
 		process.env.PI_MULTI_ACCOUNT_POOLS_FILE ||
-		join(process.env.HOME ?? ".", ".pi", "agent", "pi-multi-account-pools.json")
+		join(getAgentDir(), "pi-multi-account-pools.json")
 	);
 }
 

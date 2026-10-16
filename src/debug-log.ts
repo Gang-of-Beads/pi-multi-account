@@ -25,6 +25,7 @@ import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type LogLevel = "off" | "info" | "debug";
 
@@ -62,7 +63,7 @@ export function logLevel(): LogLevel {
 export function logPath(): string {
 	cachedPath ??=
 		process.env.PI_MULTI_ACCOUNT_LOG_FILE ||
-		join(process.env.HOME ?? ".", ".pi", "agent", "pi-multi-account.log");
+		join(getAgentDir(), "pi-multi-account.log");
 	return cachedPath;
 }
 

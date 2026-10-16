@@ -19,12 +19,14 @@ A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription bil
 Install as a pi package so pi can manage updates:
 
 ```bash
-pi install git:https://github.com/Gang-of-Beads/pi-multi-account.git
-# or
-pi install /absolute/path/to/pi-multi-account
+pi install npm:@gang-of-beads/pi-multi-account
 ```
 
+Choose one source for this fork. If switching from a Git or local installation, remove its existing package declaration before installing the npm distribution; do not load both copies. No account or credential migration is performed.
+
 Restart pi or run `/reload`.
+
+Pi-owned account, pool, settings and log paths follow `PI_CODING_AGENT_DIR` (or Pi's default agent directory). Explicit `PI_MULTI_ACCOUNT_POOLS_FILE` and `PI_MULTI_ACCOUNT_LOG_FILE` overrides still take precedence. Claude Code credentials remain in Claude Code's own locations.
 
 > Remove any separately installed `@narumitw/pi-accounts` package first, otherwise its commands and provider logic load twice:
 >

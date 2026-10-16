@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.38 - 2026-10-16
+
+- Publish `@gang-of-beads/pi-multi-account` with the existing accounts library pinned to 0.52.0, without bundling another Pi SDK.
+- Keep Pi-owned token, pool, auth/settings and log paths in the selected Pi agent directory, including `PI_CODING_AGENT_DIR`. Existing explicit pool/log file overrides are preserved; no credentials or account files are migrated.
+
 ## 0.8.37
 
 - **The aggregate pool is back in the request path on pi-web.** v0.8.36 attached the

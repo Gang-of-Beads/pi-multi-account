@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "pi-multi-account-pool-home-"));
 process.env.HOME = home;
+delete process.env.PI_CODING_AGENT_DIR;
 const logFile = join(home, "pool.log");
 process.env.PI_MULTI_ACCOUNT_LOG = "info";
 process.env.PI_MULTI_ACCOUNT_LOG_FILE = logFile;

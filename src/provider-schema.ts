@@ -23,8 +23,8 @@
  * the wire. Idempotent, which is what makes a per-request sweep free.
  */
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const SCHEMA_VALUE_KEYS = ["properties", "patternProperties", "$defs", "definitions"];
 const SCHEMA_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
@@ -116,7 +116,7 @@ export function isAnthropicProvider(provider: string | undefined): boolean {
  * the first session runs.
  */
 export function activeAnthropicToken(): string | undefined {
-	const path = join(process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "pi-accounts.json");
+	const path = join(getAgentDir(), "pi-accounts.json");
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(path, "utf8"));

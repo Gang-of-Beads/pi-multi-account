@@ -2,7 +2,7 @@
  * Session-level state: which account a session talks to, and what the footer
  * reports about it.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -83,7 +83,7 @@ export async function warnAboutStoredNativeOAuth(store: AccountStore, ctx: Exten
 	try {
 		const state = await store.readProviderAsync("anthropic");
 		if (Object.keys(state.accounts).length === 0) return; // nothing of ours to shadow it with
-		const authPath = join(process.env.HOME ?? "", ".pi", "agent", "auth.json");
+		const authPath = join(getAgentDir(), "auth.json");
 		const parsed = JSON.parse(await readFile(authPath, "utf8")) as Record<string, { type?: string; expires?: number }>;
 		const native = parsed.anthropic;
 		if (native?.type !== "oauth") return;
@@ -125,7 +125,7 @@ export async function healActiveAccount(store: AccountStore): Promise<void> {
  * alias is not, because nothing will ever register that provider id again.
  */
 export async function pruneStaleAliasDefaultProvider(store: AccountStore): Promise<void> {
-	const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
+	const settingsPath = join(getAgentDir(), "settings.json");
 	let parsed: Record<string, unknown>;
 	try {
 		parsed = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
@@ -246,7 +246,7 @@ function recordedSessionModel(
 
 /** Alias model persisted as the settings default, if any. */
 async function desiredAliasFromSettings(): Promise<{ provider: string; modelId: string } | undefined> {
-	const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
+	const settingsPath = join(getAgentDir(), "settings.json");
 	try {
 		const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
 		const provider = typeof parsed.defaultProvider === "string" ? parsed.defaultProvider : undefined;

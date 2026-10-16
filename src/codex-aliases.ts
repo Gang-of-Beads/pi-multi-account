@@ -18,7 +18,8 @@
  */
 import { watch, type FSWatcher } from "node:fs";
 import { dirname } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
 	type ContextCatalog,
@@ -44,7 +45,7 @@ import {
 } from "./codex-shared.ts";
 import { logError, logInfo } from "./debug-log.ts";
 
-type AliasModel = ProviderModelConfig & Record<string, unknown>;
+type AliasModel = Omit<Model<Api>, "provider" | "baseUrl">;
 
 export interface CodexAliasRegistry {
 	/** Register aliases before any session exists, so early model resolution sees them. */
@@ -112,11 +113,11 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 	function builtinCodexModels(): AliasModel[] {
 		return getBuiltinModels(NATIVE_PROVIDER).map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({
 			...model,
-		})) as AliasModel[];
+		}));
 	}
 
 	function registerAlias(id: string, catalog?: ContextCatalog): void {
-		const fallbackModels = models.map((model) => ({ ...model, api: model.api!, provider: id, baseUrl: BASE_URL }));
+		const fallbackModels = models.map((model) => ({ ...model, provider: id, baseUrl: BASE_URL }));
 		const catalogModels = catalog ? applyContextWindows(fallbackModels, catalog.windows) : fallbackModels;
 		pi.unregisterProvider(id);
 		pi.registerProvider({
@@ -201,7 +202,7 @@ export function registerCodexAliasProviders(pi: ExtensionAPI): CodexAliasRegistr
 	async function sync(ctx: ExtensionContext): Promise<void> {
 		const live = ctx.modelRegistry.getAll().filter((model) => model.provider === NATIVE_PROVIDER);
 		if (live.length > 0) {
-			models = live.map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({ ...model })) as AliasModel[];
+			models = live.map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({ ...model }));
 		}
 		const generation = ++syncGeneration;
 		sweepStaleAliases(ctx, wantedIds(readCodexState()));
