@@ -70,6 +70,7 @@ A pool named `anthropic` deliberately replaces the native Anthropic provider, so
 | `/sub-import [name...]` | Import detected accounts; names accept `A-Za-z0-9._-` (max 64 chars) |
 | `/anthropic-account-providers` | Re-sync `anthropic-<name>` entries in `/model` |
 | `/pools` | List aggregate pools |
+| `/fast [on\|off\|status]` | Codex Fast mode for this session; see [Codex Fast mode](#codex-fast-mode) |
 | `/pool-create [name] [accounts...]` | Create a pool; omitted accounts can be chosen interactively |
 | `/pool-add`, `/pool-remove`, `/pool-delete` | Change or delete a pool |
 
@@ -84,6 +85,7 @@ Imported credentials are read-only: this package never writes into Claude Code's
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide `anthropic-<name>` providers |
 | `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable pools |
 | `PI_MULTI_ACCOUNT_SHAPE` | enabled | Set to `0` to stop de-fingerprinting the request body and stripping transcribed reasoning. The billing header and the errored-tool-result fix still apply. See [Request shaping](#request-shaping) |
+| `PI_MULTI_ACCOUNT_CODEX_FAST` | off | Set to `1` to send Codex Fast mode (`service_tier: priority`) on every Codex request. `/fast off` still overrides it for the session |
 | `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Pool definitions file |
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
@@ -130,6 +132,14 @@ Only requests that already carry the Claude Code identity block are touched, so 
 Shaping is attached in the runtime's `prepareRequest` patch, not only to pi's `before_provider_request` hook. That hook is driven by the agent loop and `/compact` is not part of it — it calls the provider stream directly with its own options — so a summarization request used to reach the wire with neither the billing header nor the strip (measured on pi 1.1.0). `prepareRequest` runs for every provider and every request, including compaction, and unlike a `registerProvider("anthropic", …)` it cannot take the `anthropic` id away from the pool.
 
 A successful `/compact` therefore no longer carries the assistant's reasoning into the summary. That is the deliberate trade: the alternative is a summarization request that is refused outright.
+
+## Codex Fast mode
+
+Codex has a faster service tier, which OpenAI renamed from Priority processing to **Fast mode** (they are the same thing: the REST API accepts `service_tier: "fast"` and `"priority"`, while the ChatGPT Codex backend accepts only `"priority"` and answers `400 Unsupported service_tier: fast` for the other). Your subscription's own catalog advertises it as `priority`, "1.5x speed, increased usage", and Fast turns spend about 2.5x the subscription usage.
+
+`/fast on` sends it for this session; `PI_MULTI_ACCOUNT_CODEX_FAST=1` does it for every session. Measured here on `gpt-5.6-sol` with thinking off, alternating identical prompts: 10.5s / 12.8s / 10.5s without it and 2.3s / 2.7s / 3.6s with it, and 5.8s against 2.7s for a single pair on the default websocket transport. It applies to the Codex providers only (`openai-codex`, `codex`, `codex-<account>`), so `/fast status` on another model says so and nothing changes.
+
+The extension has to do this because pi loses the field on the way: pi-ai's `openai-codex` adapter reads `options.serviceTier` and writes it to the body, but `buildBaseOptions` rebuilds the options for `streamSimple` — the path the runtime calls — without it, so a tier set on the request options never reaches the wire ([earendil-works/pi#11040](https://github.com/earendil-works/pi/issues/11040), with a fix in [#11042](https://github.com/earendil-works/pi/pull/11042)). Setting it on the payload instead survives both. Until that lands, pi's own cost figure for a Fast turn stays at 1x while the subscription spends 2.5x — the field is also set on the options, so the figure corrects itself the day pi forwards it.
 
 ## Troubleshooting
 

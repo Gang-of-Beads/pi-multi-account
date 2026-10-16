@@ -1,9 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- **Codex Fast mode, `/fast on` or `PI_MULTI_ACCOUNT_CODEX_FAST=1`.** OpenAI's faster
+  service tier — renamed from Priority processing, `service_tier: "priority"` on the wire —
+  was unreachable from pi: pi-ai's `openai-codex` adapter reads `options.serviceTier` and
+  writes it to the body, but `buildBaseOptions` rebuilds the options for `streamSimple`,
+  the path the runtime calls, without that field, so a tier set on the request options
+  never reached the wire ([earendil-works/pi#11040](https://github.com/earendil-works/pi/issues/11040),
+  fix offered in [#11042](https://github.com/earendil-works/pi/pull/11042)). The extension
+  sets the field on the payload instead, which survives both, from the same
+  `prepareRequest` seam the shaping hook uses — so it covers the aliases, pi's own codex
+  login and compaction alike. The backend accepts `priority` only (`fast` is answered with
+  `400 Unsupported service_tier: fast`) and a Fast turn spends about 2.5x the subscription
+  usage, which the command's confirmation says. Measured on `gpt-5.6-sol`, thinking off,
+  identical alternating prompts: 10.5s / 12.8s / 10.5s against 2.3s / 2.7s / 3.6s. pi's own
+  cost figure stays at 1x until the upstream fix lands, because that reads the option, not
+  the payload; the option is set too, so the figure corrects itself the day pi forwards it.
+
 ## 0.8.38 - 2026-10-16
 
 - Publish `@gang-of-beads/pi-multi-account` with the existing accounts library pinned to 0.52.0, without bundling another Pi SDK.
-- Keep Pi-owned token, pool, auth/settings and log paths in the selected Pi agent directory, including `PI_CODING_AGENT_DIR`. Existing explicit pool/log file overrides are preserved; no credentials or account files are migrated.
+- Keep Pi-owned token, pool, auth/settings and log paths in the selected Pi agent directory, including `PI_CODING_AGENT_DIR`. Existing explicit pool/log file overrides are preserved; no credentials or account files are migrated. (Send Codex Fast mode from /fast and the payload hook)
 
 ## 0.8.37
 

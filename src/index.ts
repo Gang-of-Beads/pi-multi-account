@@ -14,6 +14,7 @@
  *   session-state.ts        which account a session uses + footer status
  *   billing.ts              Claude Code user-agent, billing header, request shaping
  *   anthropic-shape.ts      prompt de-fingerprinting + transcript reasoning strip
+ *   codex-fast.ts           /fast, the Codex `priority` service tier pi loses
  *   names.ts, errors.ts     small shared helpers
  *
  * What it does:
@@ -54,6 +55,7 @@ import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerCodexAliasProviders } from "./codex-aliases.ts";
 import { attachShaping, registerBillingLayer } from "./billing.ts";
+import { applyCodexFast, fastEnabled, registerCodexFast } from "./codex-fast.ts";
 import { registerAnthropicModels } from "./models.ts";
 import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
 import { abortedBy, installAbortDiagnostics } from "./abort-diagnostics.ts";
@@ -316,6 +318,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// The same for Codex accounts (codex-aliases.ts): `codex` and `codex-<name>` clone
 	// pi's native provider so /accounts logins show up in /model.
 	const codexAliases = registerCodexAliasProviders(pi);
+	registerCodexFast(pi);
 	await codexAliases.bootstrap();
 
 	// Account manager with explicit re-login and rename (accounts-menu.ts).
@@ -453,8 +456,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						// at all - it calls the provider stream directly, so
 						// `before_provider_request` never sees it.
 						const beforeOnPayload = prepared?.options?.onPayload;
-						if (prepared?.options !== undefined) attachShaping(prepared.options);
 						if (prepared?.options !== undefined) {
+							attachShaping(prepared.options);
+							applyCodexFast(prepared.options, model as { api?: string; provider?: string });
 							const inner = (typeof prepared.options.fetch === "function" ? prepared.options.fetch : globalThis.fetch) as (a: unknown, b?: unknown) => Promise<Response>;
 							const marker = inner as { __pmaTraced?: boolean };
 							if (marker.__pmaTraced !== true) {
@@ -479,6 +483,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 							// merely being a function would be true even without the call.
 							onPayloadWrapped:
 								typeof prepared?.options?.onPayload === "function" && prepared.options.onPayload !== beforeOnPayload,
+							// Whether this request went out asking for the Codex fast tier, so a
+							// "did /fast work" question is answerable from the log alone.
+							codexFast: fastEnabled(),
 						});
 						return r;
 					} catch (error) {
