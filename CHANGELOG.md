@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.39 - 2026-10-16
 
 - **Codex Fast mode, `/fast on` or `PI_MULTI_ACCOUNT_CODEX_FAST=1`.** OpenAI's faster
   service tier — renamed from Priority processing, `service_tier: "priority"` on the wire —
