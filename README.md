@@ -10,7 +10,7 @@ A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription bil
 
 ## Compatibility
 
-- Tested with pi `0.85.1`
+- Tested with pi `1.1.0` and `1.3.0`
 - Runs directly as TypeScript through pi's `jiti` loader
 - Claude Code credentials are discovered from macOS Keychain or `~/.claude/.credentials.json`
 
