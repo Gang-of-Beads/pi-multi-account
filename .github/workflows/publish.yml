@@ -1,0 +1,75 @@
+# Tag-driven npm release: pushing a v* tag verifies the tagged tree and publishes it to npm
+# with provenance through npm trusted publishing (OIDC). Merging to main releases nothing.
+# The GitHub Release and its notes are written by hand.
+#
+# Run it by hand (workflow_dispatch) with `tag` to publish a tag pushed before this workflow
+# existed. The package must trust this workflow path on npmjs.com, so keep the filename stable.
+
+name: Publish to npm
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, for example v0.8.40"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Refuse a tag that disagrees with package.json
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="$(node -p "require('./package.json').version")"
+          if [ "${TAG#v}" != "$ver" ]; then
+            echo "tag $TAG does not match package.json version $ver" >&2
+            exit 1
+          fi
+
+      - name: Publish with provenance
+        run: |
+          set -euo pipefail
+          pkg="$(node -p "require('./package.json').name")"
+          ver="$(node -p "require('./package.json').version")"
+          case "$ver" in
+            *-*) dist_tag=preview ;;
+            *) dist_tag=latest ;;
+          esac
+          if npm view "$pkg@$ver" version >/dev/null 2>&1; then
+            echo "$pkg@$ver is already on npm; skipping publish"
+          else
+            npm publish --access public --tag "$dist_tag" --provenance
+          fi
