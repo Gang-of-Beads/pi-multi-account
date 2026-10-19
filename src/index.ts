@@ -478,7 +478,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 							provider: model?.provider,
 							elapsedMs: Date.now() - t0,
 							shape: Object.keys((prepared ?? {}) as object).join(","),
-							keyKind: typeof key === "string" ? (key.includes("sk-ant-oat") ? "oauth-token" : key.slice(0, 14)) : typeof key,
+							keyKind: typeof key === "string" ? (key.includes("sk-ant-oat") ? "oauth-token" : key.slice(0, 6)) : typeof key,
 							// Different identity means the hook was really attached here;
 							// merely being a function would be true even without the call.
 							onPayloadWrapped:
