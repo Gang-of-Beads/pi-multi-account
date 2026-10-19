@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.40 - 2026-10-19
+
+- **The request log keeps less of a key.** The `keyKind` field of the request log recorded the
+  first 14 characters of any key that is not an Anthropic OAuth token; it now records the first
+  6, which still tells key kinds apart. Lines already written keep what they hold.
+
 ## 0.8.39 - 2026-10-16
 
 - **Codex Fast mode, `/fast on` or `PI_MULTI_ACCOUNT_CODEX_FAST=1`.** OpenAI's faster
