@@ -31,12 +31,16 @@
  */
 
 /**
- * Prefix of pi's built-in default preamble. Only a preamble starting with this is
- * rewritten, so `--system-prompt` and subagent prompts (which replace the preamble
- * wholesale, e.g. `<active_agent name="scout"/>`) are left alone.
+ * Prefixes of pi's built-in default preamble, one per pi wording, newest first: pi 1.5
+ * reworded it, and one package runs under both the pi CLI and an SDK host on another
+ * version. Only a preamble starting with one of them is rewritten, so `--system-prompt`
+ * and subagent prompts (which replace the preamble wholesale, e.g.
+ * `<active_agent name="scout"/>`) are left alone.
  */
-export const PI_DEFAULT_PROMPT_PREFIX =
-	"You are an expert coding assistant operating inside pi, a coding agent harness.";
+export const PI_DEFAULT_PROMPT_PREFIXES: readonly string[] = [
+	"You are a coding assistant running inside pi, a coding agent harness.",
+	"You are an expert coding assistant operating inside pi, a coding agent harness.",
+];
 
 /** The neutral prompt substituted for pi's preamble on OAuth requests. */
 export const MINIMAL_ANTHROPIC_OAUTH_PROMPT =
@@ -45,11 +49,14 @@ export const MINIMAL_ANTHROPIC_OAUTH_PROMPT =
 	"Use the available tools to answer the user's request.\n" +
 	"Show file paths clearly when working with files.";
 
-/** Marks pi's own `docs` section. Extensions can register a section named `docs` too. */
-export const PI_DOCS_SECTION_ANCHOR = "Pi documentation (read only when the user asks about pi itself";
+/** Marks pi's own `docs` section, per pi wording. Extensions can register a section named `docs` too. */
+export const PI_DOCS_SECTION_ANCHORS: readonly string[] = [
+	"Pi documentation (read only when the user asks about the harness itself",
+	"Pi documentation (read only when the user asks about pi itself",
+];
 
-/** The tools section's trailing sentence about custom tools; the paragraph goes, the section stays. */
-export const PI_TOOLS_FILLER_ANCHOR = "In addition to the tools above";
+/** The tools section's trailing sentence about custom tools, per pi wording; the paragraph goes, the section stays. */
+export const PI_TOOLS_FILLER_ANCHORS: readonly string[] = ["Additional tools may be available.", "In addition to the tools above"];
 
 /**
  * Inline replacements for known classifier trigger phrases.
@@ -121,14 +128,14 @@ function applyTextReplacements(text: string): string {
 /**
  * Shape one rendered system prompt (or one rendered section value).
  *
- * Idempotent: the minimal prompt does not start with pi's prefix, the dropped
+ * Idempotent: the minimal prompt starts with none of pi's prefixes, the dropped
  * section is gone, and every anchor is consumed exactly once.
  */
 export function shapeSystemPromptText(text: string): string {
-	let out = dropSection(text, "docs", PI_DOCS_SECTION_ANCHOR);
-	out = removeParagraph(out, PI_TOOLS_FILLER_ANCHOR);
+	let out = PI_DOCS_SECTION_ANCHORS.reduce((shaped, anchor) => dropSection(shaped, "docs", anchor), text);
+	out = PI_TOOLS_FILLER_ANCHORS.reduce((shaped, anchor) => removeParagraph(shaped, anchor), out);
 	out = applyTextReplacements(out);
-	if (out.startsWith(PI_DEFAULT_PROMPT_PREFIX)) {
+	if (PI_DEFAULT_PROMPT_PREFIXES.some((prefix) => out.startsWith(prefix))) {
 		const end = out.indexOf("\n\n");
 		out = end === -1 ? MINIMAL_ANTHROPIC_OAUTH_PROMPT : MINIMAL_ANTHROPIC_OAUTH_PROMPT + out.slice(end);
 	}

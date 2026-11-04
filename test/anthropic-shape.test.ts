@@ -15,16 +15,17 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
 	MINIMAL_ANTHROPIC_OAUTH_PROMPT,
-	PI_DEFAULT_PROMPT_PREFIX,
-	PI_DOCS_SECTION_ANCHOR,
-	PI_TOOLS_FILLER_ANCHOR,
+	PI_DEFAULT_PROMPT_PREFIXES,
+	PI_DOCS_SECTION_ANCHORS,
+	PI_TOOLS_FILLER_ANCHORS,
 	shapeSystemPromptText,
 	shapeSystemUpdateText,
 	stripTranscribedThinking,
 	textifyErrorToolResult,
 } from "../src/anthropic-shape.ts";
 
-const PI_PREAMBLE = `${PI_DEFAULT_PROMPT_PREFIX} You help users by reading files, executing commands, editing code, and writing new files.`;
+const PI_PREAMBLE =
+	"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
 const PI_DOCS = `Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
 - Main documentation: /pi/README.md
 - Additional docs: /pi/docs`;
@@ -36,22 +37,40 @@ const PI_PROMPT = [
 	`<tools>\n- read: Read a file\n\n${FILLER}\n</tools>`,
 	"<rules>\n- Be concise in your responses\n</rules>",
 	`<docs>\n${PI_DOCS}\n</docs>`,
-	"<cwd>\n/home/hxd\n</cwd>",
+	"<cwd>\n/home/user\n</cwd>",
 ].join("\n\n");
 
 // --- prompt shaping ---------------------------------------------------------
 
-{
-	const shaped = shapeSystemPromptText(PI_PROMPT);
+// pi 1.5's wording, written out as pi emits it rather than built from the anchors, so a mistyped anchor fails here.
+const PI_PREAMBLE_1_5 =
+	"You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.";
+const PI_DOCS_1_5 = `Pi documentation (read only when the user asks about the harness itself, its SDK, extensions, themes, skills, or TUI):
+- Main documentation: /pi/README.md
+- Additional docs: /pi/docs`;
+const FILLER_1_5 = "Additional tools may be available.";
+
+for (const { preamble, docs, filler } of [
+	{ preamble: PI_PREAMBLE_1_5, docs: PI_DOCS_1_5, filler: FILLER_1_5 },
+	{ preamble: PI_PREAMBLE, docs: PI_DOCS, filler: FILLER },
+]) {
+	const prompt = [
+		preamble,
+		`<tools>\n- read: Read a file\n\n${filler}\n</tools>`,
+		"<rules>\n- Be concise in your responses\n</rules>",
+		`<docs>\n${docs}\n</docs>`,
+		"<cwd>\n/home/user\n</cwd>",
+	].join("\n\n");
+	const shaped = shapeSystemPromptText(prompt);
 	assert.ok(shaped.startsWith(MINIMAL_ANTHROPIC_OAUTH_PROMPT), "the pi preamble is replaced by the neutral minimum");
-	assert.ok(!shaped.includes(PI_DEFAULT_PROMPT_PREFIX), "none of the pi preamble survives");
+	assert.ok(!PI_DEFAULT_PROMPT_PREFIXES.some((prefix) => shaped.includes(prefix)), "none of the pi preamble survives");
 	assert.equal(shaped.split("\n\n<tools>")[0], MINIMAL_ANTHROPIC_OAUTH_PROMPT, "the preamble occupies exactly one chunk");
 	assert.ok(shaped.includes("- read: Read a file"), "the tools section itself is kept");
 	assert.ok(shaped.includes("</tools>"), "the tools section close is kept");
-	assert.ok(!shaped.includes(FILLER), "the custom-tool filler paragraph is dropped");
+	assert.ok(!shaped.includes(filler), "the custom-tool filler paragraph is dropped");
 	assert.ok(shaped.includes("<rules>"), "a section with no rule to apply is untouched");
 	assert.ok(!shaped.includes("<docs>"), "pi's docs section is dropped");
-	assert.ok(shaped.includes("<cwd>\n/home/hxd\n</cwd>"), "sections after the dropped one survive intact");
+	assert.ok(shaped.includes("<cwd>\n/home/user\n</cwd>"), "sections after the dropped one survive intact");
 	assert.equal(shapeSystemPromptText(shaped), shaped, "shaping is idempotent");
 }
 
@@ -233,14 +252,14 @@ const transcript = (marker: string) =>
 			selectedTools: ["read", "bash"],
 			toolSnippets: { read: "Read a file", bash: "Run a command" },
 		});
-		assert.ok(real.startsWith(PI_DEFAULT_PROMPT_PREFIX), "pi's preamble still starts with the pinned prefix");
-		assert.ok(real.includes(PI_DOCS_SECTION_ANCHOR), "pi's docs anchor still matches");
-		assert.ok(real.includes(PI_TOOLS_FILLER_ANCHOR), "the tools filler anchor still matches");
+		assert.ok(PI_DEFAULT_PROMPT_PREFIXES.some((prefix) => real.startsWith(prefix)), "pi's preamble still starts with a pinned prefix");
+		assert.ok(PI_DOCS_SECTION_ANCHORS.some((anchor) => real.includes(anchor)), "pi's docs anchor still matches");
+		assert.ok(PI_TOOLS_FILLER_ANCHORS.some((anchor) => real.includes(anchor)), "the tools filler anchor still matches");
 
 		const shapedReal = shapeSystemPromptText(real);
 		assert.ok(shapedReal.startsWith(MINIMAL_ANTHROPIC_OAUTH_PROMPT), "pi's own prompt is shaped");
 		assert.ok(!shapedReal.includes("<docs>"), "pi's own docs section is dropped from the real prompt");
-		assert.ok(!shapedReal.includes(PI_TOOLS_FILLER_ANCHOR), "…and its tools filler paragraph too");
+		assert.ok(!PI_TOOLS_FILLER_ANCHORS.some((anchor) => shapedReal.includes(anchor)), "…and its tools filler paragraph too");
 		assert.ok(shapedReal.includes("</tools>"), "pi's tools close survives the real prompt");
 		assert.ok(shapedReal.includes("<cwd>\n/tmp\n</cwd>"), "everything else survives the real prompt");
 	} else {
