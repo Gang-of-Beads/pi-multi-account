@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.41 - 2026-11-04
+
+- **Claude sign-in requests keep their shape on pi 1.5.** pi 1.5.0 reworded its default
+  preamble, the tools section's closing sentence and the heading of its `docs` section. The
+  shaping that replaces the preamble with a neutral one and drops the two pi-only blocks on
+  Anthropic OAuth requests matched none of them, so pi's own text reached Anthropic. Each
+  anchor now lists pi's wordings, newest first, and the shaping applies under pi 1.5 and
+  under earlier pi alike: the CLI and an SDK host can load one copy of the package on
+  different pi versions. Tested with pi 1.4.0 and 1.5.0.
+
 ## 0.8.40 - 2026-10-19
 
 - **The request log keeps less of a key.** The `keyKind` field of the request log recorded the
