@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.42 - 2026-11-05
 
 - **A network blip no longer reads as broken accounts, and no longer drops a token that
   still had life.** Reported from a Termux install travelling abroad: `getaddrinfo
