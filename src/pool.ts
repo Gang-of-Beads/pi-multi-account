@@ -58,7 +58,7 @@ import { anthropicAdapter } from "./adapters.ts";
 import { activeAnthropicToken, stripRefusedBoundsInMessages } from "./provider-schema.ts";
 import { applyUserAgentOverride, attachShaping, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
-import { errorMessage } from "./errors.ts";
+import { errorMessage, isEndpointTrouble } from "./errors.ts";
 import { expandPoolAccounts, NATIVE_POOL_NAME, readPools, type PoolDefinition } from "./pools-store.ts";
 import { isCredentialSuspect, markCredentialSuspect, REFRESH_SKEW_MS, refreshAccountCredential } from "./refresh.ts";
 import { storeObserver } from "./store-watch.ts";
@@ -435,6 +435,7 @@ export function createPoolRuntime(
 		accountName: string,
 		signal: AbortSignal | undefined,
 		poolName?: string,
+		failures?: Map<string, string>,
 	): Promise<OAuthCredential | undefined> => {
 		try {
 			const state = await store.readProviderAsync("anthropic");
@@ -466,7 +467,9 @@ export function createPoolRuntime(
 			return credential;
 		} catch (error) {
 			if (signal?.aborted) return undefined;
-			logError("pool.resolve_failed", { account: accountName, detail: errorMessage(error) });
+			const detail = errorMessage(error);
+			logError("pool.resolve_failed", { account: accountName, detail });
+			failures?.set(accountName, detail);
 			return undefined;
 		}
 	};
@@ -524,6 +527,9 @@ export function createPoolRuntime(
 			// message like `503 {"message":"Upstream timeout"}`, which cannot
 			// answer "which account, why" without it.
 			const tried: Array<{ account: string; status: number | undefined; detail: string }> = [];
+			// Why each account could not even be resolved, so an unreachable
+			// endpoint does not read as "your accounts need a re-login".
+			const resolveFailures = new Map<string, string>();
 			let lastReason: FailoverReason | undefined;
 			let passes = 0;
 			for (;;) {
@@ -531,7 +537,7 @@ export function createPoolRuntime(
 				for (let index = 0; index < accounts.length; index += 1) {
 				const accountName = accounts[index]!;
 				if (signal?.aborted) break;
-				const credential = await resolveAccount(accountName, signal, definition.name);
+				const credential = await resolveAccount(accountName, signal, definition.name, resolveFailures);
 				if (!credential) continue;
 
 				const { events, captured } = attempt(kind, model, context, options_, accountName, credential);
@@ -687,6 +693,13 @@ export function createPoolRuntime(
 				// One line per account with the last thing it answered: a second pass
 				// must not read as twice the accounts.
 				const perAccount = [...new Map(tried.map((t) => [t.account, t])).values()];
+				// Accounts that never produced a credential are part of the story: a trace
+				// listing only the ones that reached the provider understates the pool.
+				for (const [account, detail] of resolveFailures) {
+					if (!perAccount.some((entry) => entry.account === account)) {
+						perAccount.push({ account, status: undefined, detail: `no credential: ${detail}` });
+					}
+				}
 				const trace = perAccount
 					.map((t) => `"${t.account}" → ${t.status ?? "error"}${t.detail ? `: ${t.detail.slice(0, 120)}` : ""}`)
 					.join("; ");
@@ -711,9 +724,16 @@ export function createPoolRuntime(
 			// "the pool is not answering" as a provider error, and it must not be the
 			// one failure shape that never opens the pace valve.
 			notePoolFailure(definition.name);
+			const resolveDetails = [...resolveFailures.values()];
+			const unreachable =
+				resolveDetails.length > 0 &&
+				resolveDetails.length === accounts.length &&
+				resolveDetails.every(isEndpointTrouble);
 			outer.push(
 				errorEvent(
-					`pi-multi-account: every account in pool "${definition.name}" failed to resolve a credential. Check /accounts.`,
+					unreachable
+						? `pi-multi-account: could not refresh any of the ${accounts.length} account(s) in pool "${definition.name}" past the Anthropic token endpoint: ${resolveDetails[0]?.slice(0, 160) ?? "endpoint error"}. The stored tokens are not the problem: check the connection or the endpoint, and /accounts only if it persists.`
+						: `pi-multi-account: every account in pool "${definition.name}" failed to resolve a credential. Check /accounts.`,
 				),
 			);
 			outer.end();

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **A network blip no longer reads as broken accounts, and no longer drops a token that
+  still had life.** Reported from a Termux install travelling abroad: `getaddrinfo
+  ENOTFOUND platform.claude.com` on one request threw out of *both* accounts' refreshes,
+  so the pool answered "every account in pool \"anthropic\" failed to resolve a
+  credential. Check /accounts." and sent the user to re-login tokens that were fine. The
+  refresh path now treats an endpoint failure — unreachable, `403 Request not allowed`,
+  `429`, `5xx` — as leaving the credential alone: a stored token that still has life is
+  served through it, and only an expired one fails. Real rejections (`invalid_grant`,
+  `401`) still fail loudly and still ask for a re-login, so nothing hides a token that is
+  actually dead. When every account fails this way the pool error names the endpoint and
+  the count instead of `/accounts`, and the new `refresh.deferred` log line records what
+  the endpoint said.
+
 ## 0.8.41 - 2026-11-04
 
 - **Claude sign-in requests keep their shape on pi 1.5.** pi 1.5.0 reworded its default

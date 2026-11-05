@@ -8,6 +8,25 @@ export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * A refresh failure at the endpoint rather than in the credential.
+ *
+ * A phone on a flaky link cannot resolve `platform.claude.com`, and the token
+ * endpoint also answers `403 Request not allowed` when it dislikes the client
+ * rather than the token. Neither says the stored token is bad, so telling them
+ * apart keeps a blip from reading as "your accounts are broken" and, before this
+ * existed, from dropping an account whose access token had minutes of life left.
+ * Credential rejections (`invalid_grant`, `401`) are deliberately not matched.
+ */
+export function isEndpointTrouble(detail: string): boolean {
+	if (/invalid_grant|invalid_request|unauthorized_client|status=401/i.test(detail)) return false;
+	return (
+		/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EACCES|fetch failed|getaddrinfo|socket hang up|Connection error|network|UND_ERR_/i.test(
+			detail,
+		) || /status[= ]\(?(403|408|429|5\d\d)\)?/i.test(detail)
+	);
+}
+
 /** Condense an OAuth refresh failure into one actionable line. */
 export function conciseRefreshFailure(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);

@@ -6,7 +6,7 @@ import type { OAuthCredential } from "@earendil-works/pi-ai";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import type { AccountProviderAdapter } from "@narumitw/pi-accounts/src/oauth.ts";
 import { credentialSummary, fingerprint, logDebug, logError, logInfo } from "./debug-log.ts";
-import { conciseRefreshFailure, errorMessage, sanitizeRefreshError } from "./errors.ts";
+import { conciseRefreshFailure, errorMessage, isEndpointTrouble, sanitizeRefreshError } from "./errors.ts";
 import { storeObserver } from "./store-watch.ts";
 
 /** Refresh a credential this long before it actually expires. */
@@ -474,6 +474,29 @@ async function refreshAccountCredentialOnce(
 			after: credentialSummary(refreshed),
 		});
 	} catch (error) {
+		const detail = conciseRefreshFailure(error);
+		// A token the endpoint would not renew (unreachable, 403, 429, 5xx) is not a
+		// bad token: keep serving it while it still has life, and escalate once it has
+		// expired. A refresh of two accounts used to throw on both and drop the whole
+		// pool on one DNS failure (`getaddrinfo ENOTFOUND platform.claude.com` on a
+		// Termux install), although both stored tokens were still valid.
+		// Classify on the raw message: `conciseRefreshFailure` drops `status=…` when the
+		// body carries a bare `error` code, so it cannot see a 5xx/429 there.
+		if (isEndpointTrouble(errorMessage(error)) && current.expires > now) {
+			// A token the provider already rejected stays marked while it cannot be
+			// replaced: the sweep clears the mark before the attempt, so a silent return
+			// would let the next request trust a dead token again.
+			if (options.force === true) {
+				markCredentialSuspect(provider.id, accountName, `refresh deferred: ${detail.slice(0, 80)}`);
+			}
+			logInfo("refresh.deferred", {
+				provider: provider.id,
+				account: accountName,
+				detail,
+				expiresInMs: current.expires - now,
+			});
+			return current;
+		}
 		recordRefreshFailure(provider.id, accountName, error, current, now);
 		throw sanitizeRefreshError(provider.id, accountName, error);
 	}

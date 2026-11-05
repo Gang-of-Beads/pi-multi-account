@@ -418,6 +418,48 @@ resetPoolStateForTesting();
 resetPoolsFileForTesting();
 
 {
+	// Nothing could be refreshed and nothing got a request out: the message must
+	// name the endpoint, because "Check /accounts" sends the user to re-login for
+	// tokens that are merely unable to renew (reported from a Termux install).
+	const store = await makeStore("personal", ["personal", "work"]);
+	await store.updateProviderAsync("anthropic", async (state) => ({
+		...state,
+		accounts: Object.fromEntries(
+			Object.entries(state.accounts).map(([name, credential]) => [
+				name,
+				{ ...(credential as { type: "oauth" }), expires: Date.now() - 60_000 },
+			]),
+		) as Record<string, { type: "oauth"; access: string; refresh: string; expires: number }>,
+	}));
+	const fake = makeFakeProvider([{ status: 200, text: "never reached" }]);
+	const { pi, providers } = stubPi();
+	const networkAdapter = {
+		id: "anthropic",
+		displayName: "Anthropic",
+		oauth: {
+			refresh: async () => {
+				throw new Error("fetch failed; cause=Error: getaddrinfo ENOTFOUND platform.claude.com");
+			},
+		},
+	} as unknown as AccountProviderAdapter;
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: networkAdapter });
+	runtime.registerPool({ name: "offline", accounts: ["personal", "work"] });
+	const registered = providers.offline!;
+
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const errorEvent = events.find((event) => event.type === "error") as { error?: { errorMessage?: string } } | undefined;
+	const message = errorEvent?.error?.errorMessage ?? "";
+	assert.match(message, /could not refresh any of the 2 account\(s\)/, "the count is named");
+	assert.match(message, /ENOTFOUND|getaddrinfo/, "the endpoint error is quoted");
+	assert.match(message, /not the problem/, "and the accounts are cleared");
+	assert.doesNotMatch(message, /Check \/accounts/, "so the re-login advice stays out of it");
+	assert.equal(fake.requests.length, 0, "no request could be attempted");
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+{
 	// When every account fails, the surfaced error must carry the per-account
 	// trace. A bare provider message ("503 Upstream timeout") cannot answer
 	// "which account, why" — the first question anyone asks when a pool dies.

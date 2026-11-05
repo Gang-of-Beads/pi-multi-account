@@ -150,6 +150,7 @@ The extension has to do this because pi loses the field on the way: pi-ai's `ope
 - **Another installation rotates shared tokens:** set `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH=0` on the passive installation.
 - **Requests are blocked as "reverse engineering or duplicating model outputs":** retry once; if it persists across accounts, check that shaping is on (`PI_MULTI_ACCOUNT_SHAPE` is unset) and that pi or a tool has not reworded the prompt anchors (see the drift test in `test/anthropic-shape.test.ts`).
 - **A pool error says it is waiting N seconds:** all accounts have failed several requests in a row; see [Pools and failover](#pools-and-failover).
+- **A pool error says it could not refresh past the token endpoint:** the network, not the accounts. The endpoint was unreachable (`getaddrinfo`, connection reset) or answered `403`/`429`/`5xx`. A stored token that still has life keeps being used through it; `/accounts` only helps once it says `invalid_grant` or `401`. Check the link, then the VPN or proxy.
 - **Billing lands on "extra usage" instead of the plan:** the billing header is not reaching the wire. Confirm the account is OAuth (`sk-ant-oat…`) and that the request is `anthropic` or a pool, not a plain API-key provider.
 
 ## Security
