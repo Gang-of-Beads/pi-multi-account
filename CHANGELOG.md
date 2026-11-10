@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.43 - 2026-11-10
 
 - **Claude Fable 5.2, and the version floor it needs.** `claude-fable-5-2` is in the model
   catalogue the plugin adds beyond pi-ai's data: 1M window, 128k output, $8/$40 with $0.20
