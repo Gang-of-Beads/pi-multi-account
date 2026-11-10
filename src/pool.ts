@@ -55,6 +55,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { anthropicAdapter } from "./adapters.ts";
+import { builtinAnthropicModels } from "./aliases.ts";
 import { activeAnthropicToken, stripRefusedBoundsInMessages } from "./provider-schema.ts";
 import { applyUserAgentOverride, attachShaping, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError, logInfo } from "./debug-log.ts";
@@ -938,7 +939,7 @@ export function createPoolRuntime(
 
 	return {
 		registerPool(definition, models) {
-			registerProviderFor(definition, models ?? builtinAnthropicModels());
+			registerProviderFor(definition, models ?? (builtinAnthropicModels() as unknown as ProviderModel[]));
 		},
 		unregisterPool(name) {
 			pi.unregisterProvider(name);
@@ -948,13 +949,6 @@ export function createPoolRuntime(
 			return [...poolProviderNames];
 		},
 	};
-}
-
-function builtinAnthropicModels(): ProviderModel[] {
-	return builtinProviders()
-		.find((provider) => provider.id === "anthropic")
-		?.getModels()
-		.map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({ ...model })) as ProviderModel[];
 }
 
 /** Last-resort status extraction from an SDK error message ("429 {…}"). */

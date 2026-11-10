@@ -8,6 +8,7 @@
 import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
 import { builtinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import { type RegisteredModel, withExtraModels } from "./models.ts";
 import { anthropicAdapter } from "./adapters.ts";
 import { applyUserAgentOverride, attachShaping, buildUserAgent } from "./billing.ts";
 import { credentialSummary, logDebug, logError } from "./debug-log.ts";
@@ -94,10 +95,18 @@ export function registerAccountAliasProviders(
 	return { bootstrap, sync };
 }
 
-function builtinAnthropicModels(): ProviderModel[] {
-	return getBuiltinModels("anthropic").map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({
+/**
+ * The alias providers' list: pi's own models plus the ones this plugin adds because
+ * pi-ai's data predates them. A model missing here is missing from every
+ * `anthropic-<name>` entry in `/model`, which is where a pool account is actually
+ * picked. It is also the catalogue a pool provider registered without explicit
+ * models falls back to.
+ */
+export function builtinAnthropicModels(): ProviderModel[] {
+	const base = getBuiltinModels("anthropic").map(({ provider: _provider, baseUrl: _baseUrl, ...model }) => ({
 		...model,
-	})) as ProviderModel[];
+	})) as unknown as RegisteredModel[];
+	return withExtraModels(base) as unknown as ProviderModel[];
 }
 
 function registerAliasProvider(

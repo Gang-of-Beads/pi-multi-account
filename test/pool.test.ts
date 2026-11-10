@@ -372,6 +372,11 @@ resetPoolsFileForTesting();
 	upsertPool({ name: "team", accounts: ["personal", "work"] });
 	runtime.registerPool({ name: "team", accounts: ["personal", "work"] });
 
+	// Without explicit models the pool falls back to the plugin's own catalogue, so
+	// a model missing there is a model no `/pool-*` entry can reach.
+	const poolIds = (providers["team"]!.getModels as () => Array<{ id: string }>)().map((model) => model.id);
+	assert.ok(poolIds.includes("claude-fable-5-2"), "the pool catalogue carries the extras too");
+
 	const registered = providers["team"]!;
 	assert.ok(registered, "the pool registers a provider under the user's name");
 	assert.equal(typeof registered.streamSimple, "function", "with a streamSimple override (string-form registration)");

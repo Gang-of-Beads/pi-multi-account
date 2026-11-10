@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { EXTRA_ANTHROPIC_MODELS, asRegisteredModel, withExtraModels } from "../src/models.ts";
+import { builtinAnthropicModels } from "../src/aliases.ts";
 
 const opus5 = {
 	id: "claude-opus-5",
@@ -58,3 +60,22 @@ assert.deepEqual(fable?.cost, { input: 8, output: 40, cacheRead: 0.2, cacheWrite
 assert.equal(EXTRA_ANTHROPIC_MODELS[0]?.id, "claude-fable-5-2", "and it leads the list");
 
 console.log("ok: extra anthopic models");
+
+// The alias providers pick a pool account, so a model missing from their list is a
+// model the user cannot reach on `/pool-*`-style entries either.
+const aliasModels = builtinAnthropicModels();
+const aliasIds = aliasModels.map((model) => model.id);
+const baseIds = getBuiltinModels("anthropic").map((model) => model.id);
+assert.ok(baseIds.length > 0, "pi-ai still ships an anthropic catalogue");
+for (const id of baseIds) {
+	assert.equal(aliasIds.includes(id), true, `${id} is still offered on every alias provider`);
+}
+for (const model of EXTRA_ANTHROPIC_MODELS) {
+	const offered = aliasModels.find((candidate) => candidate.id === model.id);
+	assert.ok(offered, `${model.id} is offered on every alias provider`);
+	assert.equal(offered.contextWindow, model.contextWindow, "with pi's own context window");
+	assert.equal(offered.maxTokens, model.maxTokens, "and its output bound");
+}
+assert.equal(new Set(aliasIds).size, aliasIds.length, "and is not listed twice");
+
+console.log("ok: alias catalogue carries the extras");

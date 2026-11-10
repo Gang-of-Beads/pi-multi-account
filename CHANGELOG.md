@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Fable 5.2 reaches `/model` before the first turn, and on the alias providers too.**
+  0.8.43 added the catalogue entry, but it was registered only from `turn_start`, so a session
+  that had not run a turn yet — every session right after a restart — offered no
+  `claude-fable-5-2`, and it was never added to the `anthropic-<account>` providers at all
+  because those clone pi-ai's own list. The catalogue is now registered at `session_start` as
+  well, and the alias list carries the extras, so every entry in the picker that reaches an
+  account can reach the model.
+
 ## 0.8.44 - 2026-11-10
 
 - The claimed Claude Code version moves on to `2.1.322`, the current release. 2.1.321 was

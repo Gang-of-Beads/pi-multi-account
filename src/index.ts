@@ -374,6 +374,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			logError("pool.reregister_failed", { detail: errorMessage(error) });
 		}
 		try {
+			// Before any turn, so `/model` offers a model newer than the installed
+			// pi-ai data without waiting for one; the turn-start pass re-syncs it.
+			registerAnthropicModels(pi, ctx?.modelRegistry?.getAll?.());
+		} catch (error) {
+			logError("models.catalogue_failed", { detail: errorMessage(error) });
+		}
+		try {
 			// pi 0.87's CLI sends without ever calling a provider stream, so the
 			// strip in the pool's wrapper cannot cover `pi -p --model
 			// anthropic/...`; the prompt's tool declarations are built from the
