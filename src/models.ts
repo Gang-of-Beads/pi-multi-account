@@ -33,12 +33,41 @@ export interface RegisteredModel {
 /**
  * Models newer than the installed pi-ai data.
  *
- * Opus 5.5 is Claude Code's current top model. Everything except the id and the
- * display name mirrors Opus 5 (same 1M window, same 128k output, same effort and
- * cache support), which is what Anthropic shipped it as - if it ever differs,
- * this is the one place to say so.
+ * Everything except the id and the display name mirrors Opus 5 — same 1M window,
+ * same 128k output, same effort and cache support — which is the shape Anthropic
+ * shipped both of them as; if one ever starts to differ, this is the place to say
+ * so, and `test/models.test.ts` compares the two field by field.
+ *
+ * Fable 5.2 (2026-11-09) is the current top model, and the one Claude Code 2.1.321
+ * made its default Fable. The gateway refuses a model to a client below its
+ * minimum, so `CC_VERSION` has to stay at or above 2.1.321 while this entry exists.
+ *
+ * Opus 5.5 is the everyday model above which Anthropic points at Fable.
  */
 export const EXTRA_ANTHROPIC_MODELS: readonly RegisteredModel[] = [
+	{
+		// No `-fast` sibling id: fast mode here is the `speed` field, which this
+		// extension does not send yet.
+		id: "claude-fable-5-2",
+		name: "Claude Fable 5.2",
+		api: "anthropic-messages",
+		baseUrl: "https://api.anthropic.com",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+		thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
+		compat: {
+			supportsMidConvoEffort: true,
+			supportsMidConvoSystemMessages: true,
+			supportsMidConvoToolChanges: true,
+			forceAdaptiveThinking: true,
+			supportsTemperature: false,
+			supportsStrictTools: true,
+		},
+		promptCache: { short: 300, long: 3600 },
+	},
 	{
 		id: "claude-opus-5-5",
 		name: "Claude Opus 5.5",

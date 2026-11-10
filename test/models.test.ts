@@ -20,13 +20,17 @@ const opus5 = {
 const merged = withExtraModels([opus5]);
 assert.equal(merged.length, 1 + EXTRA_ANTHROPIC_MODELS.length);
 assert.equal(merged[0]?.id, "claude-opus-5");
-assert.equal(merged.at(-1)?.id, "claude-opus-5-5");
+assert.deepEqual(
+	merged.slice(-EXTRA_ANTHROPIC_MODELS.length).map((model) => model.id),
+	["claude-fable-5-2", "claude-opus-5-5"],
+	"the extras keep their order, newest top model first",
+);
 
 // Once pi-ai ships it, it is not added twice.
 const shipped = withExtraModels([opus5, ...EXTRA_ANTHROPIC_MODELS]);
 assert.deepEqual(
 	shipped.map((model) => model.id),
-	["claude-opus-5", "claude-opus-5-5"],
+	["claude-opus-5", "claude-fable-5-2", "claude-opus-5-5"],
 );
 
 // The registry's own fields (provider, and whatever else it carries) do not leak
@@ -36,10 +40,21 @@ assert.equal("provider" in cleaned, false);
 assert.equal(cleaned.id, "claude-opus-5");
 assert.equal(cleaned.contextWindow, 1_000_000);
 
-// The new model mirrors Opus 5 where it matters.
-const extra = EXTRA_ANTHROPIC_MODELS[0];
-assert.equal(extra?.reasoning, true);
-assert.equal(extra?.contextWindow, 1_000_000);
-assert.equal(extra?.maxTokens, 128_000);
+// Both extras mirror the model they were cloned from (see src/models.ts:38-41) —
+// and nothing about the canonical shape may drift either way.
+for (const model of EXTRA_ANTHROPIC_MODELS) {
+	for (const field of ["reasoning", "contextWindow", "maxTokens", "input", "api", "baseUrl"] as const) {
+		assert.deepEqual(model[field], opus5[field], `${model.id} mirrors claude-opus-5.${field}`);
+	}
+	assert.equal(model.thinkingLevelMap?.off, null, `${model.id} cannot turn thinking off`);
+	assert.equal((model.compat as { forceAdaptiveThinking?: boolean }).forceAdaptiveThinking, true, `${model.id} forces adaptive thinking`);
+}
+assert.equal(opus5.contextWindow, 1_000_000, "fixture still the shipped 1M window");
+assert.equal(opus5.maxTokens, 128_000, "fixture still the shipped 128k output");
+
+// Fable 5.2 is priced at 8/40 with 0.20 cache reads (Anthropic's launch post).
+const fable = EXTRA_ANTHROPIC_MODELS.find((model) => model.id === "claude-fable-5-2");
+assert.deepEqual(fable?.cost, { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 });
+assert.equal(EXTRA_ANTHROPIC_MODELS[0]?.id, "claude-fable-5-2", "and it leads the list");
 
 console.log("ok: extra anthopic models");

@@ -52,7 +52,7 @@ const BILLING_SALT = "59cf53e54c78";
 // "reverse engineering or duplicating model outputs" enforcement keys on (see
 // opencode-claude-auth #188 and opencode-anthropic-auth #80, Apr 2026). Bump
 // when a release lands.
-export const CC_VERSION = "2.1.296";
+export const CC_VERSION = "2.1.321";
 
 /**
  * Raise the claimed version without waiting for a release.

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Claude Fable 5.2, and the version floor it needs.** `claude-fable-5-2` is in the model
+  catalogue the plugin adds beyond pi-ai's data: 1M window, 128k output, $8/$40 with $0.20
+  cache reads, always-on adaptive thinking — the same shape as Opus 5.5, which the list
+  already carried. The claimed Claude Code version moves from `2.1.296` to `2.1.321`, the
+  release that introduced the model, because the gateway refuses a model to a client below
+  its minimum. Checked live that shaping survives the release's prefix rule: an edited
+  system prompt followed by a stored thinking block answers `200` on two turns, and pi-ai's
+  Anthropic adapter sends no `computer_20251124` tool, so the other `400` in the note does
+  not apply here.
+
 ## 0.8.42 - 2026-11-05
 
 - **A network blip no longer reads as broken accounts, and no longer drops a token that

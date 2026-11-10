@@ -90,7 +90,7 @@ Imported credentials are read-only: this package never writes into Claude Code's
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
 | `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | JSONL diagnostics file |
-| `ANTHROPIC_CLI_VERSION_MIN` | the highest of the pinned `2.1.296`, a local `claude --version`, and this value | Raises the version claimed in the billing header and the user-agent. It is a floor, never a downgrade: a value below the pin or below a local claude is ignored. The gateway enforces a per-model minimum (`claude_code_version_too_old`), so only a claim at or above it reaches a new model. An exact version comes from `ANTHROPIC_USER_AGENT` instead |
+| `ANTHROPIC_CLI_VERSION_MIN` | the highest of the pinned `2.1.321`, a local `claude --version`, and this value | Raises the version claimed in the billing header and the user-agent. It is a floor, never a downgrade: a value below the pin or below a local claude is ignored. The gateway enforces a per-model minimum (`claude_code_version_too_old`), so only a claim at or above it reaches a new model. An exact version comes from `ANTHROPIC_USER_AGENT` instead |
 | `CODEX_CLIENT_VERSION_MIN` | the highest of the pinned `0.162.1`, a local `codex --version`, and this value | Raises the Codex CLI version the ChatGPT `/codex/models` catalog request claims. The catalog hides newer models from older clients, and a model missing from it keeps pi's base window (272k) instead of the account's maximum. A floor, never a downgrade; a value that is not a dotted version such as `0.163.0` is ignored |
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | User-agent entrypoint override |
 | `ANTHROPIC_USER_AGENT` | generated | Complete user-agent override. It is the last word: the `claude-cli/<version>` it names becomes the billing header's `cc_version` too, so the two cannot disagree |
@@ -100,6 +100,12 @@ The account store is `~/.pi/agent/pi-accounts.json`. Each Codex account's contex
 ```bash
 tail -f ~/.pi/agent/pi-multi-account.log
 ```
+
+## New models
+
+A Claude model ships days before pi-ai's data does. `src/models.ts` carries the missing ones so they appear in `/model` on the `anthropic` pool provider, with the window, output ceiling, price and effort support Anthropic shipped them with. Today that is `claude-fable-5-2` (2026-11-09): 1M window, 128k output, $8/$40, always-on adaptive thinking, and the version floor below is what the gateway needs for it.
+
+What such a model needs from here, in order: the catalogue entry, a floor at or above the Claude Code release that introduced it (`ANTHROPIC_CLI_VERSION_MIN`, or the pin once it is common), and a live check that shaping still passes. Fable 5.2 answers an edited system prompt followed by a stored thinking block with `200`, not the `400` its release note warns about, measured on two turns with `AGENTS.md` rewritten in between.
 
 ## Request shaping
 

@@ -423,6 +423,13 @@ for (const ua of ["node", "GitHub Copilot", "codex-cli/1.0", undefined]) {
 		`CC_VERSION ${CC_VERSION} is below the 2.1.280 model minimum`,
 	);
 
+	// Fable 5.2 (src/models.ts) needs 2.1.321 on the wire for the same reason;
+	// a pin below it makes the claude-fable-5-2 registration unreachable.
+	assert.ok(
+		major! * 1_000_000 + minor! * 1_000 + patch! >= 2_001_321,
+		`CC_VERSION ${CC_VERSION} is below the 2.1.321 claude-fable-5-2 minimum`,
+	);
+
 	// No claude on PATH: the pin is the claim.
 	process.env.PATH = fakeBin;
 	resetClaudeVersionCache();
