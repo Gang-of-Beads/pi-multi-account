@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The claimed Claude Code version moves on to `2.1.322`, the current release. 2.1.321 was
+  only the floor Fable 5.2 needs; claiming the newest release is what keeps a later model or
+  gateway rule reachable without another change here, and the pin is a floor either way.
+
 ## 0.8.43 - 2026-11-10
 
 - **Claude Fable 5.2, and the version floor it needs.** `claude-fable-5-2` is in the model

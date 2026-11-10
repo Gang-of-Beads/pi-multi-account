@@ -52,7 +52,7 @@ const BILLING_SALT = "59cf53e54c78";
 // "reverse engineering or duplicating model outputs" enforcement keys on (see
 // opencode-claude-auth #188 and opencode-anthropic-auth #80, Apr 2026). Bump
 // when a release lands.
-export const CC_VERSION = "2.1.321";
+export const CC_VERSION = "2.1.322";
 
 /**
  * Raise the claimed version without waiting for a release.
@@ -218,9 +218,9 @@ export function buildBillingHeaderValue(
  * request has.
  *
  * Callers are the `prepareRequest` patch in index.ts (every provider, every host,
- * compaction included) and the alias stream wrapper in aliases.ts; the pool's
- * stream wrapper calls `withShapingOnPayload` directly instead, building a fresh
- * per-attempt options literal.
+ * compaction included) and the stream wrappers in aliases.ts and pool.ts; all
+ * three hand over their options object and use the mutated result (the pool's is
+ * a fresh per-attempt literal). Only `attachShaping` calls `withShapingOnPayload`.
  */
 export function attachShaping(options: unknown): Record<string, unknown> {
 	const record = (options ?? {}) as Record<string, unknown>;

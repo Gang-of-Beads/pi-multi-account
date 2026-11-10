@@ -33,14 +33,15 @@ export interface RegisteredModel {
 /**
  * Models newer than the installed pi-ai data.
  *
- * Everything except the id and the display name mirrors Opus 5 — same 1M window,
- * same 128k output, same effort and cache support — which is the shape Anthropic
- * shipped both of them as; if one ever starts to differ, this is the place to say
- * so, and `test/models.test.ts` compares the two field by field.
+ * Same shape as Opus 5 — same 1M window, same 128k output, same effort and cache
+ * support, and only the per-token cost differs — which is how Anthropic shipped
+ * both of them; if the shape ever drifts, this is the place to say so, and
+ * `test/models.test.ts` pins the shared fields one by one.
  *
  * Fable 5.2 (2026-11-09) is the current top model, and the one Claude Code 2.1.321
  * made its default Fable. The gateway refuses a model to a client below its
- * minimum, so `CC_VERSION` has to stay at or above 2.1.321 while this entry exists.
+ * minimum (2.1.321 for Fable 5.2), so the pin must never drop back under a model the
+ * list carries.
  *
  * Opus 5.5 is the everyday model above which Anthropic points at Fable.
  */
