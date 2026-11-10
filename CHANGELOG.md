@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.44 - 2026-11-10
 
 - The claimed Claude Code version moves on to `2.1.322`, the current release. 2.1.321 was
   only the floor Fable 5.2 needs; claiming the newest release is what keeps a later model or
