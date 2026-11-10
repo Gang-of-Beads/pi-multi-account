@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.45 - 2026-11-10
 
 - **Fable 5.2 reaches `/model` before the first turn, and on the alias providers too.**
   0.8.43 added the catalogue entry, but it was registered only from `turn_start`, so a session
