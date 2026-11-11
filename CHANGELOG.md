@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- The account-change notice no longer says "by another process": it reads
+  `Anthropic accounts: active account changed personal → work.` and the log is still named.
+  The cause was already spelled out by the sentence, and the phrase once appeared twice in
+  one row. The assembled line is built by `formatForeignChange` so a test can assert it whole.
+
+- Two store-watch defects fixed while there: a self-change announcement was matched against
+  the *read* rather than the change, so a write that lost the store lock left it armed and it
+  swallowed the next foreign change; and it marked every change of a read as ours, dropping an
+  unrelated rotation that landed in the same sweep. The announcement is now consumed by the
+  next read either way and only the announced account counts as self. The run counter behind
+  the sweep was process-wide; it is per session, so one session finishing no longer releases
+  a refresh another session still has in flight.
+
 ## 0.8.45 - 2026-11-10
 
 - **Fable 5.2 reaches `/model` before the first turn, and on the alias providers too.**

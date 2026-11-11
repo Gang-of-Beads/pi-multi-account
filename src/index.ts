@@ -71,7 +71,7 @@ import {
 import { createPoolRuntime, drainPoolNotices, isPoolProvider, lastPoolAccount } from "./pool.ts";
 import { registerPoolCommands } from "./pool-commands.ts";
 import { activeAnthropicToken, isAnthropicProvider, stripRefusedBoundsInTools } from "./provider-schema.ts";import { readPools } from "./pools-store.ts";
-import { drainForeignChanges, storeObserver, summarizeForeignChanges } from "./store-watch.ts";
+import { drainForeignChanges, formatForeignChange, storeObserver, summarizeForeignChanges } from "./store-watch.ts";
 import {
 	healActiveAccount,
 	pruneStaleAliasDefaultProvider,
@@ -156,22 +156,25 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// account switch decides who the next request bills to.
 		for (const summary of summarizeForeignChanges(drainForeignChanges())) {
 			if (summary.level === "info") continue;
-			ctx.ui.notify(`Anthropic accounts: ${summary.text} (by another process). See ${logPath()}.`, summary.level);
+			ctx.ui.notify(formatForeignChange(summary, logPath()), summary.level);
 		}
 	};
 
 	// Bracket every run so the sweep can leave the credential it is using alone.
-	// Counted rather than boolean: one process hosts many sessions, and their
-	// runs overlap freely.
-	let runInFlight = false;
-	pi.on("agent_start", () => {
-		if (runInFlight) return;
-		runInFlight = true;
+	// Counted per session: one process hosts many sessions, their runs overlap, and
+	// the sweep must only rotate once the last one is over.
+	const runsBySession = new Map<string, number>();
+	pi.on("agent_start", (_event, ctx) => {
+		const session = ctx.sessionManager.getSessionId();
+		runsBySession.set(session, (runsBySession.get(session) ?? 0) + 1);
 		markRunStarted();
 	});
-	const releaseRun = (): void => {
-		if (!runInFlight) return;
-		runInFlight = false;
+	const releaseRun = (ctx: { sessionManager: { getSessionId(): string } }): void => {
+		const session = ctx.sessionManager.getSessionId();
+		const runs = runsBySession.get(session) ?? 0;
+		if (runs === 0) return; // a shutdown after agent_end must not release twice
+		if (runs === 1) runsBySession.delete(session);
+		else runsBySession.set(session, runs - 1);
 		markRunFinished();
 	};
 	/**
@@ -235,8 +238,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	});
 
-	pi.on("agent_end", () => {
-		releaseRun();
+	pi.on("agent_end", (_event, ctx) => {
+		releaseRun(ctx);
 		// The run is over, so rotating now is safe and keeps a long idle stretch
 		// from starting with a stale token.
 		void refreshLoop.refreshNow();
@@ -614,10 +617,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		reportForeignStoreChanges(ctx);
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		// A session torn down mid-run must not leave the sweep permanently
 		// convinced that a run is still in flight.
-		releaseRun();
+		releaseRun(ctx);
 		refreshLoop.stop();
 		codexAliases.stop();
 	});

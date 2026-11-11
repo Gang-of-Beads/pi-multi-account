@@ -97,10 +97,10 @@ export function diffSnapshots(previous: StoreSnapshot, next: StoreSnapshot): Sto
 /**
  * One-line description of a change.
  *
- * "by another process" is *not* part of it: the description stays the plain fact
- * and the caller adds the cause, because it once carried the phrase itself and
- * the caller appended it again — "was rotated by another process (by another
- * process)", which is what the owner photographed.
+ * The description is the plain fact and nothing else — no cause, no
+ * parenthetical. It once carried "by another process" while the caller appended
+ * the same phrase, which is what the owner photographed; now the caller adds
+ * none either.
  */
 export function describeChange(change: StoreChange): string {
 	switch (change.kind) {
@@ -173,6 +173,11 @@ export function summarizeForeignChanges(changes: StoreChange[]): { text: string;
 	return summaries;
 }
 
+/** The user-facing notice for one aggregated finding. */
+export function formatForeignChange(summary: { text: string }, logPath: string): string {
+	return `Anthropic accounts: ${summary.text}. See ${logPath}.`;
+}
+
 /**
  * Tracks the store state this process believes it last wrote or read.
  *
@@ -223,8 +228,9 @@ export class StoreObserver {
 	}
 
 	/**
-	 * Announce a write this process is performing. The next `observe` treats the
-	 * matching difference as our own rather than as a foreign writer.
+	 * Announce a write this process is performing. A read that observes it treats
+	 * the matching change as our own rather than as a foreign writer; any other
+	 * change in the same read is still reported as foreign.
 	 */
 	expectSelfChange(reason: string): void {
 		this.pendingSelfReasons.push(reason);
@@ -240,6 +246,11 @@ export class StoreObserver {
 		const next = snapshotProviderState(state);
 		const previous = this.previous;
 		this.previous = next;
+		// Consumed by every read, including one that shows no difference (a write that
+		// lost the store lock, a token that came back unchanged): left armed, the
+		// announcement would mark the *next*, foreign, change as ours.
+		const selfReasons = this.pendingSelfReasons;
+		this.pendingSelfReasons = [];
 		if (!previous) {
 			logInfo("store.baseline", {
 				provider: this.providerId,
@@ -254,14 +265,15 @@ export class StoreObserver {
 		const changes = diffSnapshots(previous, next);
 		if (changes.length === 0) return [];
 
-		const selfReasons = this.pendingSelfReasons;
-		this.pendingSelfReasons = [];
-		const origin = selfReasons.length > 0 ? "self" : "foreign";
+		const isSelf = (change: StoreChange): boolean =>
+			change.kind === "token_rotated" &&
+			change.account !== undefined &&
+			selfReasons.includes(`refresh ${change.account}`);
 		for (const change of changes) {
 			logInfo("store.changed", {
 				provider: this.providerId,
 				source,
-				origin,
+				origin: isSelf(change) ? "self" : "foreign",
 				...(selfReasons.length > 0 ? { reasons: selfReasons } : {}),
 				...change,
 				...(change.account
@@ -269,8 +281,9 @@ export class StoreObserver {
 					: {}),
 			});
 		}
-		if (origin !== "foreign") return [];
-		pendingForeignChanges.push(...changes);
-		return changes;
+		const foreign = changes.filter((change) => !isSelf(change));
+		if (foreign.length === 0) return [];
+		pendingForeignChanges.push(...foreign);
+		return foreign;
 	}
 }

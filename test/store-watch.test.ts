@@ -1,7 +1,7 @@
 process.env.PI_MULTI_ACCOUNT_LOG = "0";
 
 import assert from "node:assert/strict";
-import { describeChange, diffSnapshots, drainForeignChanges, snapshotProviderState, StoreObserver, summarizeForeignChanges } from "../src/store-watch.ts";
+import { describeChange, diffSnapshots, drainForeignChanges, formatForeignChange, snapshotProviderState, StoreObserver, summarizeForeignChanges } from "../src/store-watch.ts";
 
 const credential = (access: string, refresh = `${access}-r`) => ({ access, refresh, expires: 1 });
 
@@ -52,21 +52,62 @@ assert.equal(drainForeignChanges().length, 1, "foreign changes are queued for th
 assert.equal(drainForeignChanges().length, 0, "draining is destructive");
 
 // ...and stays quiet about the writes this process announced.
-observer.expectSelfChange("switch account");
-assert.deepEqual(observer.observe({ ...stateA, active: "work" }, "test"), []);
+observer.expectSelfChange("refresh personal");
+assert.deepEqual(
+	observer.observe({ ...stateA, active: "personal", accounts: { ...stateA.accounts, personal: credential("k") } }, "test"),
+	[],
+	"the announced token is ours, not a foreign writer's",
+);
 assert.deepEqual(drainForeignChanges(), []);
+
+// The announcement is consumed by the very next read even when that read shows no
+// difference (a write that lost the store lock, a token that came back unchanged):
+// left armed it would swallow the *next* foreign change instead.
+observer.expectSelfChange("refresh personal");
+assert.deepEqual(
+	observer.observe({ ...stateA, active: "personal", accounts: { ...stateA.accounts, personal: credential("k") } }, "test"),
+	[],
+	"a read with no difference still consumes the announcement",
+);
+const leaked = observer.observe(
+	{ ...stateA, active: "work", accounts: { ...stateA.accounts, personal: credential("z") } },
+	"test",
+);
+assert.deepEqual(
+	leaked.map((c) => c.kind).sort(),
+	["active_account", "token_rotated"],
+	"a stale announcement no longer swallows the next foreign change",
+);
+assert.equal(drainForeignChanges().length, 2);
+
+// Only the announced account is self: an unrelated rotation in the same read is
+// still reported rather than dropped along with it.
+observer.expectSelfChange("refresh merchant");
+const mixed = observer.observe(
+	{ ...stateA, active: "work", accounts: { merchant: credential("e"), personal: credential("y") } },
+	"test",
+);
+assert.deepEqual(mixed.map((c) => c.account ?? c.kind), ["personal"], "only the announced account is treated as self");
+assert.deepEqual(drainForeignChanges().map((c) => c.account ?? c.kind), ["personal"]);
 
 assert.equal(
 	describeChange({ kind: "active_account", from: "merchant", to: "personal" }),
 	"active account changed merchant → personal",
 );
 
-// The description stays the plain fact: the caller adds "(by another process)",
-// and when the description carried the phrase too the row read
-// "was rotated by another process (by another process)".
+// The description stays the plain fact, with no cause appended by anyone: when it
+// carried "(by another process)" and the caller added the same phrase, the row
+// read "was rotated by another process (by another process)".
 assert.equal(
 	describeChange({ kind: "token_rotated", account: "personal" }),
 	'token for "personal" was rotated',
+);
+
+// ...and the notice the caller builds adds only the prefix and the log path, so the
+// phrase appears once — or, now, not at all.
+assert.equal(
+	formatForeignChange({ text: 'token for "personal" was rotated' }, "/tmp/x.log"),
+	'Anthropic accounts: token for "personal" was rotated. See /tmp/x.log.',
 );
 
 // One sweep after a rotation finds the same thing for every account at once.
