@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.46 - 2026-11-10
 
 - The account-change notice no longer says "by another process": it reads
   `Anthropic accounts: active account changed personal → work.` and the log is still named.
