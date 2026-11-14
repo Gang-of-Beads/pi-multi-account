@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.47 - 2026-11-14
 
 - **A `503 credential validation failed` now says the tokens are probably fine.** That status is
   the gateway's own credential check falling over under load, not a rejected account: measured
