@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **A `503 credential validation failed` now says the tokens are probably fine.** That status is
+  the gateway's own credential check falling over under load, not a rejected account: measured
+  2026-11-13, 31 of them in a row across both accounts and everything green again 35 seconds
+  later, while both stored tokens still had hours of life. The wording made it read like an auth
+  problem and sent the owner to `/accounts`, so the pool error now adds "the stored tokens are
+  usually fine, so retry before reaching for /accounts" for that body. Failover and the stall
+  pacing are unchanged — both already treated it as the provider side.
+
 ## 0.8.46 - 2026-11-10
 
 - The account-change notice no longer says "by another process": it reads

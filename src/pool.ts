@@ -223,6 +223,18 @@ export function resetPoolStateForTesting(): void {
  */
 export type FailoverReason = "no-status" | "transient-status" | "stream-error";
 
+/**
+ * The sentence that keeps "credential validation failed" from reading as a bad account.
+ *
+ * That 503 is the gateway's own check falling over under load, not a rejected token: measured
+ * 2026-11-13, 31 in a row across both accounts, everything fine again 35s later. Without the
+ * hint the wording sends people to `/accounts` for tokens that never expired.
+ */
+export function validationHint(body: string): string {
+	if (!/credential validation failed/i.test(body)) return "";
+	return "\n\npi-multi-account: the gateway could not validate the credential this time; the stored tokens are usually fine, so retry before reaching for /accounts.";
+}
+
 export function failoverReason(status: number | undefined): FailoverReason | undefined {
 	if (status === undefined || status === 0) return "no-status";
 	if (FAILOVER_STATUSES.has(status)) return "transient-status";
@@ -713,9 +725,10 @@ export function createPoolRuntime(
 					pause > 0
 						? `\n\npi-multi-account: ${stall} consecutive requests failed on every account; waiting ${Math.round(pause / 1000)}s before the next.`
 						: "";
+				const validationNote = validationHint(body);
 				outer.push(
 					errorEvent(
-						`${body}\n\npi-multi-account: pool "${definition.name}" tried ${perAccount.length} account(s)${walked}: ${trace}.${stallNote}`,
+						`${body}${validationNote}\n\npi-multi-account: pool "${definition.name}" tried ${perAccount.length} account(s)${walked}: ${trace}.${stallNote}`,
 					),
 				);
 				outer.end();
@@ -862,19 +875,12 @@ export function createPoolRuntime(
 			// to `/accounts`, which is where account management belongs once this
 			// extension is installed.
 			//
-			// Object-form registration only. (v0.8.5/0.8.6 briefly added a
-			// string-form registration on top for pi-web's composer gate; it was
-			// rolled back - the real failure was unrelated, and the extra
-			// registration churn only fed the multi-runtime provider races.)
 			pi.unregisterProvider(NATIVE_POOL_NAME);
-			// Named form: pi 0.87 routes the object form to
-			// `registerNativeProvider`, which its own auth-status check does not
-			// consult.
-			// Named form. The object form routes to pi's
-			// `registerNativeProvider`, which composes auth from the built-in
-			// provider and never looks at the extension's own; the named form is
-			// the one pi's configuration layer reads. `api` is required by that
-			// path once a custom stream is supplied.
+			// Registered under the pool's own name, never as an object form: that form
+			// routes to pi's `registerNativeProvider`, which composes auth from the
+			// built-in provider and never consults this extension's. The named form is
+			// the one pi's configuration layer and its API routing read, and `api` is
+			// required on it once a custom stream is supplied.
 			pi.registerProvider(definition.name, {
 				api: "anthropic-messages",
 				...(native as Provider),

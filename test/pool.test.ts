@@ -40,6 +40,7 @@ import {
 	poolStallCount,
 	poolStallPauseMs,
 	resetPoolStateForTesting,
+	validationHint,
 	type BaseStreamHost,
 } from "../src/pool.ts";
 import {
@@ -182,6 +183,8 @@ assert.equal(
 
 interface FakeStep {
 	status: number;
+	/** Response body; the default is a rate-limit error. */
+	body?: unknown;
 	retryAfter?: string;
 	/** Text streamed before the response completes; omitted = request-level failure. */
 	text?: string;
@@ -211,7 +214,8 @@ function makeFakeProvider(script: FakeStep[]): BaseStreamHost & { requests: Fake
 	const responseFor = (step: FakeStep): Response => {
 		const headers = new Headers({ "content-type": "application/json" });
 		if (step.retryAfter !== undefined) headers.set("retry-after", step.retryAfter);
-		return new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }), {
+		const body = step.body ?? { type: "error", error: { type: "rate_limit_error", message: "slow down" } };
+		return new Response(JSON.stringify(body), {
 			status: step.status,
 			headers,
 		});
@@ -907,3 +911,50 @@ resetPoolsFileForTesting();
 	assert.equal((events.at(-1) as { reason?: string }).reason, "aborted", "the caller sees an abort, not a provider error");
 	assert.equal(fake.requests.length, before, "no provider attempt was made during the pause");
 }
+
+{
+	// "503 credential validation failed" is the gateway's check failing under load, not a
+	// rejected token: it sent people to /accounts for tokens that were fine (2026-11-13).
+	// Asserted on the helper, because pi-ai normalizes a fake response body differently
+	// from the real gateway's, which is where this text comes from.
+	const hint = validationHint("503 credential validation failed");
+	assert.match(hint, /stored tokens are usually fine/, "the tokens are cleared");
+	assert.match(hint, /retry before reaching for \/accounts/, "and the advice is retry first");
+	const plainOverload = '503 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}';
+	assert.equal(validationHint(plainOverload), "", "a plain 503 body says nothing extra");
+	assert.equal(validationHint("400 invalid_request_error"), "", "and neither does another status");
+}
+
+{
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([
+		{ status: 200, errorOnStream: "503 credential validation failed" },
+		{ status: 200, errorOnStream: "503 credential validation failed" },
+	]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "validate", accounts: ["personal", "work"] });
+	const registered = providers.validate!;
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const err = events.find((e) => e.type === "error") as { error?: { errorMessage?: string } } | undefined;
+	assert.match(err?.error?.errorMessage ?? "", /stored tokens are usually fine/, "e2e hint");
+}
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
+
+{
+	const store = await makeStore("personal", ["personal", "work"]);
+	const fake = makeFakeProvider([{ status: 503 }, { status: 503 }]);
+	const { pi, providers } = stubPi();
+	const runtime = createPoolRuntime(pi, store, { baseProvider: fake, refreshAdapter: testAdapter });
+	runtime.registerPool({ name: "validate2", accounts: ["personal", "work"] });
+	const registered = providers.validate2!;
+	const { events } = await collect((registered.streamSimple as BaseStreamHost["stream"])(modelName(), {}, { fetch: fake.fetch }));
+	const err = events.find((e) => e.type === "error") as { error?: { errorMessage?: string } } | undefined;
+	assert.doesNotMatch(err?.error?.errorMessage ?? "", /stored tokens are usually fine/, "plain 503 no hint");
+}
+
+resetSuspectCredentialsForTesting();
+resetPoolStateForTesting();
+resetPoolsFileForTesting();
