@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.50 - 2026-11-14
 
 - **Grok subscriptions work: `xai` and `xai-<account>` in `/model`.** The account is logged in
   through `/accounts` (xAI's device-code flow, which pi-ai already carries) and resolves its
