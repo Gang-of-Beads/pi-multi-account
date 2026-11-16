@@ -103,11 +103,11 @@ assert.equal(
 	'token for "personal" was rotated',
 );
 
-// ...and the notice the caller builds adds only the prefix and the log path, so the
-// phrase appears once — or, now, not at all.
+// ...and the notice the caller builds adds only the prefix, so the phrase appears once
+// and nothing else rides along.
 assert.equal(
-	formatForeignChange({ text: 'token for "personal" was rotated' }, "/tmp/x.log"),
-	'Anthropic accounts: token for "personal" was rotated. See /tmp/x.log.',
+	formatForeignChange({ text: 'token for "personal" was rotated' }),
+	'Anthropic accounts: token for "personal" was rotated.',
 );
 
 // One sweep after a rotation finds the same thing for every account at once.
@@ -118,23 +118,23 @@ assert.deepEqual(summarizeForeignChanges([
 	{ kind: "token_rotated", account: "merchant" },
 	{ kind: "token_rotated", account: "work" },
 ]), [
-	{ text: 'tokens for "personal", "merchant" and "work" were rotated', level: "info" },
+	{ text: 'tokens for "personal", "merchant" and "work" were rotated', prominent: false },
 ]);
 
 assert.deepEqual(summarizeForeignChanges([{ kind: "token_rotated", account: "personal" }]), [
-	{ text: 'token for "personal" was rotated', level: "info" },
+	{ text: 'token for "personal" was rotated', prominent: false },
 ]);
 
-// An active account change keeps its own line and its warning level; it decides
+// An active account change keeps its own line and is the one worth a toast: it decides
 // which account the next request bills to.
 assert.deepEqual(summarizeForeignChanges([
 	{ kind: "token_rotated", account: "personal" },
 	{ kind: "active_account", from: "personal", to: "work" },
 	{ kind: "token_rotated", account: "work" },
 ]), [
-	{ text: 'token for "personal" was rotated', level: "info" },
-	{ text: "active account changed personal → work", level: "warning" },
-	{ text: 'token for "work" was rotated', level: "info" },
+	{ text: 'token for "personal" was rotated', prominent: false },
+	{ text: "active account changed personal → work", prominent: true },
+	{ text: 'token for "work" was rotated', prominent: false },
 ]);
 
 assert.deepEqual(summarizeForeignChanges([
@@ -142,8 +142,8 @@ assert.deepEqual(summarizeForeignChanges([
 	{ kind: "account_added", account: "b" },
 	{ kind: "account_removed", account: "c" },
 ]), [
-	{ text: 'accounts "a" and "b" were added', level: "info" },
-	{ text: 'account "c" was removed', level: "info" },
+	{ text: 'accounts "a" and "b" were added', prominent: false },
+	{ text: 'account "c" was removed', prominent: false },
 ]);
 
 assert.deepEqual(summarizeForeignChanges([]), []);

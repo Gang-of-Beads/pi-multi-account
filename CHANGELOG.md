@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The account-change notice is a plain line now, and an info instead of a warning:
+  `Anthropic accounts: active account changed (none) → work.` An account switch is expected
+  behaviour, not a problem, and the log path on the end did not change what the reader does.
+  Routine changes (a token rotated, an account added or removed) still stay in the log only.
+
 ## 0.8.48 - 2026-11-14
 
 - **`/accounts` can put an account into a pool.** The pool feature only had `/pool-create`

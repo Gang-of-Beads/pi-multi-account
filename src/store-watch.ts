@@ -122,17 +122,15 @@ function quotedList(names: string[]): string {
 }
 
 /**
- * Fold a batch of foreign changes into as few sentences as they carry meaning.
+ * Fold a batch of foreign changes into sentences naming the accounts involved.
  *
- * The store is per machine, so one sweep after a rotation reads the same finding
- * for every account that rotated at once — three notifications saying the same
- * thing three times, which the owner read as one error reported three times.
- * Rotations of the same kind become one sentence naming the accounts; an active
- * account change keeps its own line, because it is the one that says which
- * account the next request bills to.
- */
-export function summarizeForeignChanges(changes: StoreChange[]): { text: string; level: "info" | "warning" }[] {
-	const summaries: { text: string; level: "info" | "warning" }[] = [];
+ * The store is per machine, so one sweep reads the same finding for every account it applies
+ * to. Rotations, additions and removals of one kind become one sentence each; an active-account
+ * change keeps its own line and is the only entry marked `prominent`, because it is the one that
+ * says which account the next request bills to. Only `prominent` entries are worth a toast —
+ * the rest are log-only, so they are folded for readability rather than to spare the user. */
+export function summarizeForeignChanges(changes: StoreChange[]): { text: string; prominent: boolean }[] {
+	const summaries: { text: string; prominent: boolean }[] = [];
 	const rotated: string[] = [];
 	const added: string[] = [];
 	const removed: string[] = [];
@@ -140,21 +138,21 @@ export function summarizeForeignChanges(changes: StoreChange[]): { text: string;
 		if (rotated.length > 0) {
 			summaries.push({
 				text: rotated.length === 1 ? `token for ${quotedList(rotated)} was rotated` : `tokens for ${quotedList(rotated)} were rotated`,
-				level: "info",
+				prominent: false,
 			});
 			rotated.length = 0;
 		}
 		if (added.length > 0) {
 			summaries.push({
 				text: added.length === 1 ? `account ${quotedList(added)} was added` : `accounts ${quotedList(added)} were added`,
-				level: "info",
+				prominent: false,
 			});
 			added.length = 0;
 		}
 		if (removed.length > 0) {
 			summaries.push({
 				text: removed.length === 1 ? `account ${quotedList(removed)} was removed` : `accounts ${quotedList(removed)} were removed`,
-				level: "info",
+				prominent: false,
 			});
 			removed.length = 0;
 		}
@@ -162,7 +160,9 @@ export function summarizeForeignChanges(changes: StoreChange[]): { text: string;
 	for (const change of changes) {
 		if (change.kind === "active_account") {
 			flush();
-			summaries.push({ text: describeChange(change), level: "warning" });
+			// Only an active-account change is worth a toast: it decides who the next
+		// request bills to, while a rotation is routine bookkeeping already in the log.
+			summaries.push({ text: describeChange(change), prominent: true });
 			continue;
 		}
 		if (change.kind === "token_rotated" && change.account !== undefined) rotated.push(change.account);
@@ -173,9 +173,14 @@ export function summarizeForeignChanges(changes: StoreChange[]): { text: string;
 	return summaries;
 }
 
-/** The user-facing notice for one aggregated finding. */
-export function formatForeignChange(summary: { text: string }, logPath: string): string {
-	return `Anthropic accounts: ${summary.text}. See ${logPath}.`;
+/**
+ * The user-facing notice for one aggregated finding.
+ *
+ * No log path: the line is short enough to read at a glance, and where the log lives does not
+ * change anything the reader does about it.
+ */
+export function formatForeignChange(summary: { text: string }): string {
+	return `Anthropic accounts: ${summary.text}.`;
 }
 
 /**

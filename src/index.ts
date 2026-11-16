@@ -57,7 +57,7 @@ import { registerCodexAliasProviders } from "./codex-aliases.ts";
 import { attachShaping, registerBillingLayer } from "./billing.ts";
 import { applyCodexFast, fastEnabled, registerCodexFast } from "./codex-fast.ts";
 import { registerAnthropicModels } from "./models.ts";
-import { credentialSummary, logDebug, logError, logInfo, logLevel, logPath } from "./debug-log.ts";
+import { credentialSummary, logDebug, logError, logInfo, logLevel } from "./debug-log.ts";
 import { abortedBy, installAbortDiagnostics } from "./abort-diagnostics.ts";
 import { logProviderResponse } from "./response-log.ts";
 import { errorMessage } from "./errors.ts";
@@ -151,12 +151,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	 * as a different account.
 	 */
 	const reportForeignStoreChanges = (ctx: { ui: { notify: (message: string, level: "info" | "warning" | "error") => void } }): void => {
-		// Only what changed the *active* account is worth saying: a rotation is
-		// routine bookkeeping between processes and the log already has it, while an
-		// account switch decides who the next request bills to.
+		// An account switch is expected behaviour, not a problem, so it is an info, and the
+		// routine entries around it stay in the log alone.
 		for (const summary of summarizeForeignChanges(drainForeignChanges())) {
-			if (summary.level === "info") continue;
-			ctx.ui.notify(formatForeignChange(summary, logPath()), summary.level);
+			if (!summary.prominent) continue;
+			ctx.ui.notify(formatForeignChange(summary), "info");
 		}
 	};
 
