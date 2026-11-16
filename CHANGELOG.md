@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.48 - 2026-11-14
 
 - **`/accounts` can put an account into a pool.** The pool feature only had `/pool-create`
   typed by hand, so an account saved in the menu could not be aggregated without leaving it.
