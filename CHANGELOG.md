@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **`/accounts` can put an account into a pool.** The pool feature only had `/pool-create`
+  typed by hand, so an account saved in the menu could not be aggregated without leaving it.
+  The menu now offers "Add account to a pool": pick the account, pick a pool or name a new
+  one. Adding to an `"all"` pool says so instead of freezing today's account list, and a
+  second add of the same account is a no-op.
+
+- The subscription-as-API design is written down in
+  `docs/design/subscription-gateway.md`: routes with a fallback chain and weighted
+  aggregation, caller keys, passthrough before translation, the ownership lease, and the
+  phases. It also records the xAI finding — pi-ai already ships the SuperGrok / X Premium
+  device-code login, so Grok needs an adapter and a provider-agnostic pool here, not a new
+  login flow.
+
 ## 0.8.47 - 2026-11-14
 
 - **A `503 credential validation failed` now says the tokens are probably fine.** That status is

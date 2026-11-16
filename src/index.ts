@@ -325,7 +325,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	await codexAliases.bootstrap();
 
 	// Account manager with explicit re-login and rename (accounts-menu.ts).
-	registerAccountsCommandOverride(pi, store, providers, aliases, refreshLoop);
+	registerAccountsCommandOverride(pi, store, providers, aliases, refreshLoop, () => {
+		// The menu wrote a pool: register it now, or the picker would keep showing the old set
+		// until the next session start. A registration that throws must not take the command
+		// down — the pool is on disk either way, the same trade the sibling sites make.
+		try {
+			for (const definition of readPools()) poolRuntime.registerPool(definition);
+		} catch (error) {
+			logError("pool.menu_reregister_failed", { detail: errorMessage(error) });
+		}
+	});
 
 	// Subscription import commands (subscription-import.ts).
 	registerClaudeImportCommands(pi, store, aliases, refreshLoop);

@@ -44,6 +44,7 @@ import {
 	type BaseStreamHost,
 } from "../src/pool.ts";
 import {
+	addAccountToPool,
 	checkPoolName,
 	deletePool,
 	expandPoolAccounts,
@@ -119,6 +120,16 @@ assert.deepEqual(readPools(), [{ name: "work-pool", accounts: ["personal"] }, { 
 assert.equal(deletePool("work-pool"), true);
 assert.equal(deletePool("work-pool"), false);
 assert.deepEqual(readPools().map((pool) => pool.name), ["everything"]);
+
+// Adding from /accounts: appends, keeps order, and reports the two no-ops instead of
+// rewriting a pool that already covers the account.
+upsertPool({ name: "chain", accounts: ["work"] });
+assert.equal(addAccountToPool("chain", "personal"), "added");
+assert.deepEqual(readPools().find((pool) => pool.name === "chain")?.accounts, ["work", "personal"], "appended, order kept");
+assert.equal(addAccountToPool("chain", "personal"), "present", "a second add is a no-op");
+assert.equal(addAccountToPool("everything", "personal"), "all", "an \"all\" pool already follows every account");
+assert.deepEqual(readPools().find((pool) => pool.name === "everything")?.accounts, "all", "and is not frozen into a list");
+assert.equal(addAccountToPool("gone", "personal"), "unknown");
 resetPoolsFileForTesting();
 
 // Expansion: "all" follows the store (active first), explicit lists keep

@@ -1,10 +1,11 @@
 /**
- * The `/accounts` menu: login, re-login, switch, rename, remove.
+ * The `/accounts` menu: login, re-login, switch, rename, remove, pool membership.
  *
  * This replaces pi-accounts' own command so re-login and rename can be offered
  * explicitly instead of forcing a same-name replace flow.
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { addAccountToPool, checkPoolName, readPools, upsertPool } from "./pools-store.ts";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { AccountStore, DEFAULT_PI_LOGIN_LABEL, parseAccountName } from "@narumitw/pi-accounts/src/accounts.ts";
 import { defineOwn, defineOwnMap, getOwnCredential, normalizeStoredCredential } from "@narumitw/pi-accounts/src/account-store.ts";
@@ -23,6 +24,8 @@ export function registerAccountsCommandOverride(
 	providers: readonly AccountProviderAdapter[],
 	aliases: AliasRegistry,
 	refreshLoop: Pick<BackgroundRefreshLoop, "refreshNow">,
+	/** Re-register pools after the menu changed them, so the picker sees it at once. */
+	onPoolsChanged: () => void,
 ): void {
 	const adapterMap = new Map<AccountProviderId, AccountProviderAdapter>(
 		providers.map((provider) => [provider.id, provider]),
@@ -44,6 +47,7 @@ export function registerAccountsCommandOverride(
 					? [
 						"Re-login existing account",
 						"Switch active account",
+						"Add account to a pool",
 						"Rename account",
 						"Remove account",
 					]
@@ -61,6 +65,9 @@ export function registerAccountsCommandOverride(
 					return;
 				case "Switch active account":
 					await switchStoredAccount(ctx, store, adapterMap, states, aliases, refreshLoop);
+					return;
+				case "Add account to a pool":
+					await addAccountToExistingPool(ctx, states, onPoolsChanged);
 					return;
 				case "Rename account":
 					await renameStoredAccount(pi, ctx, store, adapterMap, states, aliases, refreshLoop);
@@ -493,4 +500,79 @@ function toSupportedProviderId(value: string | undefined): AccountProviderId | u
 	return value === "anthropic" || value === "github-copilot" || value === "openai-codex"
 		? value
 		: undefined;
+}
+
+/**
+ * Aggregation from the account list: the pool feature had no way in except `/pool-create`
+ * typed by hand, so an account saved here could not be aggregated without leaving the menu.
+ */
+async function addAccountToExistingPool(
+	ctx: ExtensionCommandContext,
+	states: readonly ProviderState[],
+	onPoolsChanged: () => void,
+): Promise<void> {
+	// Pools are anthropic-only today; the provider pick still lists them all so the menu
+	// reads uniformly, and a non-anthropic choice says so.
+	const state = await selectProviderState(ctx, states, "Add which provider's account to a pool?", (candidate) =>
+		Object.keys(candidate.accounts).length > 0,
+	);
+	if (!state) return;
+	if (state.adapter.id !== "anthropic") {
+		ctx.ui.notify("Pools hold Anthropic accounts only for now.", "warning");
+		return;
+	}
+	const accountName = await selectStoredAccountName(ctx, state, "Which account goes into the pool?");
+	if (!accountName) return;
+
+	const pools = readPools();
+	let selected: string | undefined;
+	if (pools.length > 0) {
+		selected = await ctx.ui.select("Add \"" + accountName + "\" to which pool?", [...pools.map((pool) => pool.name), "New pool…"]);
+		if (!selected) return;
+	}
+	if (pools.length === 0 || selected === "New pool…") {
+		const created = await createPoolFromAccount(ctx, accountName, onPoolsChanged);
+		if (created) ctx.ui.notify(`Created pool "${created}" with "${accountName}".`, "info");
+		return;
+	}
+
+	const pool = selected!;
+	const result = addAccountToPool(pool, accountName);
+	switch (result) {
+		case "added":
+			onPoolsChanged();
+			ctx.ui.notify(`"${accountName}" added to pool "${pool}". The pool tries its accounts in order.`, "info");
+			return;
+		case "present":
+			ctx.ui.notify(`"${accountName}" is already in pool "${pool}".`, "info");
+			return;
+		case "all":
+			ctx.ui.notify(`Pool "${pool}" already follows every account, so nothing changed.`, "info");
+			return;
+		default:
+			ctx.ui.notify(`Pool "${pool}" disappeared while the menu was open.`, "warning");
+	}
+}
+
+/** Ask for a name, refuse reserved ones, and write a pool holding just this account. */
+async function createPoolFromAccount(
+	ctx: ExtensionCommandContext,
+	accountName: string,
+	onPoolsChanged: () => void,
+): Promise<string | undefined> {
+	const answer = await ctx.ui.input("Name for the new pool:", `${accountName}-pool`.slice(0, 64));
+	const requested = (answer ?? "").trim();
+	if (requested.length === 0) return undefined;
+	const checked = checkPoolName(requested);
+	if (!checked.ok) {
+		ctx.ui.notify(checked.error, "warning");
+		return undefined;
+	}
+	if (readPools().some((pool) => pool.name === requested)) {
+		ctx.ui.notify(`Pool "${requested}" already exists.`, "warning");
+		return undefined;
+	}
+	upsertPool({ name: requested, accounts: [accountName] });
+	onPoolsChanged();
+	return requested;
 }

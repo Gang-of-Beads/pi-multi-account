@@ -65,7 +65,7 @@ A pool named `anthropic` deliberately replaces the native Anthropic provider, so
 
 | Command | Purpose |
 | --- | --- |
-| `/accounts` | Add, switch, rename, re-login, or remove named OAuth accounts |
+| `/accounts` | Add, switch, rename, re-login, or remove named OAuth accounts; add one to a pool |
 | `/sub-accounts` | List Claude Code accounts available for import |
 | `/sub-import [name...]` | Import detected accounts; names accept `A-Za-z0-9._-` (max 64 chars) |
 | `/anthropic-account-providers` | Re-sync `anthropic-<name>` entries in `/model` |
@@ -75,6 +75,10 @@ A pool named `anthropic` deliberately replaces the native Anthropic provider, so
 | `/pool-add`, `/pool-remove`, `/pool-delete` | Change or delete a pool |
 
 Imported credentials are read-only: this package never writes into Claude Code's own credential storage.
+
+## Subscriptions as an API
+
+Design only for now: [`docs/design/subscription-gateway.md`](docs/design/subscription-gateway.md) turns the pool that already fails over across accounts into an HTTP endpoint with a fallback chain, weighted aggregation and per-caller keys, so another client can use the same subscriptions. It also records why the xAI subscription (SuperGrok / X Premium, already implemented in pi-ai as `pi auth login xai`) needs an adapter here before it can be pooled, and lists the phases and the risks.
 
 ## Configuration
 

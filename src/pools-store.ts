@@ -16,12 +16,12 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { logError, logInfo } from "./debug-log.ts";
+import { errorMessage } from "./errors.ts";
+import { ALIAS_PREFIX } from "./aliases.ts";
 
 /** The one name that overrides pi's native Anthropic provider. */
 export const NATIVE_POOL_NAME = "anthropic";
 
-/** Prefix reserved for per-account aliases (`anthropic-<name>` in aliases.ts). */
-const ALIAS_PREFIX = "anthropic-";
 
 export type PoolAccounts = "all" | string[];
 
@@ -62,18 +62,35 @@ export function checkPoolName(raw: string): PoolNameCheck {
 	return { ok: true, name };
 }
 
+/**
+ * The stored pools.
+ *
+ * A broken file answers "no pools" — but says so in the log, because the next write rebuilds
+ * the file from that empty answer and would otherwise destroy every definition silently. Names
+ * the writer would refuse are dropped here too: a hand-edited `anthropic-work` would shadow the
+ * per-account alias it is reserved against, since the registered provider id is the pool name.
+ */
 export function readPools(): PoolDefinition[] {
+	let raw: string;
 	try {
-		const parsed = JSON.parse(readFileSync(poolsFilePath(), "utf8")) as Partial<PoolsFile>;
-		if (!Array.isArray(parsed.pools)) return [];
-		return parsed.pools.filter(
-			(entry): entry is PoolDefinition =>
-				typeof entry?.name === "string" &&
-				(entry.accounts === "all" || (Array.isArray(entry.accounts) && entry.accounts.every((a) => typeof a === "string"))),
-		);
+		raw = readFileSync(poolsFilePath(), "utf8");
 	} catch {
+		return []; // no file yet is not worth a line
+	}
+	let parsed: Partial<PoolsFile>;
+	try {
+		parsed = JSON.parse(raw) as Partial<PoolsFile>;
+	} catch (error) {
+		logError("pool.read_failed", { path: poolsFilePath(), detail: errorMessage(error) });
 		return [];
 	}
+	if (!Array.isArray(parsed.pools)) return [];
+	return parsed.pools.filter(
+		(entry): entry is PoolDefinition =>
+			typeof entry?.name === "string" &&
+			checkPoolName(entry.name).ok &&
+			(entry.accounts === "all" || (Array.isArray(entry.accounts) && entry.accounts.every((a) => typeof a === "string"))),
+	);
 }
 
 /** Insert or replace one pool definition (position preserved), creating the file when needed. */
@@ -84,6 +101,23 @@ export function upsertPool(definition: PoolDefinition): void {
 	else pools.push(definition);
 	writePools({ version: 1, pools });
 	logInfo("pool.saved", { name: definition.name, accounts: definition.accounts });
+}
+
+/**
+ * Add one account to a pool, keeping the rest and its order.
+ *
+ * `"all"` already follows every account, so adding to it is a no-op the caller reports rather
+ * than a rewrite that would freeze today's account list. Answers "added" after the write, or
+ * why nothing changed: "present", "all", or "unknown" for a pool that is not there.
+ */
+export function addAccountToPool(name: string, account: string): "added" | "present" | "all" | "unknown" {
+	const pools = readPools();
+	const pool = pools.find((candidate) => candidate.name === name);
+	if (pool === undefined) return "unknown";
+	if (pool.accounts === "all") return "all";
+	if (pool.accounts.includes(account)) return "present";
+	upsertPool({ ...pool, accounts: [...pool.accounts, account] });
+	return "added";
 }
 
 export function deletePool(name: string): boolean {
