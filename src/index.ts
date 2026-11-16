@@ -6,6 +6,7 @@
  *   adapters.ts             patched pi-accounts provider adapters
  *   refresh.ts              background refresh sweep + single-credential refresh
  *   aliases.ts              `anthropic-<account>` providers shown by /model
+ *   xai-aliases.ts          `xai`/`xai-<account>` providers for Grok subscriptions
  *   pool.ts                 aggregate pool runtime: failover + rotation
  *   pools-store.ts          user-defined pool definitions (name + accounts)
  *   pool-commands.ts        /pools, /pool-create, /pool-add/-remove/-delete
@@ -54,6 +55,7 @@ import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
 import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
 import { registerCodexAliasProviders } from "./codex-aliases.ts";
+import { registerXaiAliasProviders } from "./xai-aliases.ts";
 import { attachShaping, registerBillingLayer } from "./billing.ts";
 import { applyCodexFast, fastEnabled, registerCodexFast } from "./codex-fast.ts";
 import { registerAnthropicModels } from "./models.ts";
@@ -317,11 +319,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const aliases = registerAccountAliasProviders(pi, store);
 	await aliases.bootstrap();
 
-	// The same for Codex accounts (codex-aliases.ts): `codex` and `codex-<name>` clone
+	// The same for xAI accounts (xai-aliases.ts), and for Codex accounts (codex-aliases.ts):
+	// `xai`/`xai-<name>` and `codex`/`codex-<name>` clone
 	// pi's native provider so /accounts logins show up in /model.
 	const codexAliases = registerCodexAliasProviders(pi);
+	const xaiAliases = registerXaiAliasProviders(pi, store);
 	registerCodexFast(pi);
 	await codexAliases.bootstrap();
+	await xaiAliases.bootstrap();
 
 	// Account manager with explicit re-login and rename (accounts-menu.ts).
 	registerAccountsCommandOverride(pi, store, providers, aliases, refreshLoop, () => {
@@ -540,9 +545,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} catch (error) {
 			console.error(`pi-multi-account: codex providers were not loaded: ${errorMessage(error)}`);
 		}
+		try {
+			await xaiAliases.sync(ctx);
+		} catch (error) {
+			console.error(`pi-multi-account: xai providers were not loaded: ${errorMessage(error)}`);
+		}
 		// Follow the store from here on: a /accounts login in another session, or a sweep
 		// rotation, must reach /model without a /reload.
 		codexAliases.watchStore(ctx);
+		xaiAliases.watchStore(ctx);
 		try {
 			await poolSync.sync(ctx);
 		} catch (error) {
@@ -631,5 +642,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		releaseRun(ctx);
 		refreshLoop.stop();
 		codexAliases.stop();
+		xaiAliases.stop();
 	});
 }

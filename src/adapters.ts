@@ -50,6 +50,13 @@ export function anthropicAdapter(): AccountProviderAdapter {
 	return adapter;
 }
 
+/** The xAI adapter, for the `xai` aliases. */
+export function xaiAdapter(): AccountProviderAdapter {
+	const adapter = patchedProviders().find((provider) => provider.id === "xai");
+	if (!adapter) throw new Error("pi-multi-account: missing xAI provider adapter.");
+	return adapter;
+}
+
 /** Keep non-token credential fields (label, tier, source) across a refresh. */
 export function preserveCredentialMetadata<T extends OAuthCredential>(
 	previous: T,

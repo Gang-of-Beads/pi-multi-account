@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Grok subscriptions work: `xai` and `xai-<account>` in `/model`.** The account is logged in
+  through `/accounts` (xAI's device-code flow, which pi-ai already carries) and resolves its
+  token from the store per request, refusals and refresh included. Two things a subscription
+  needs that an API key does not: `api.x.ai` refuses the token with
+  `personal-team-blocked:spending-limit`, so the aliases use the Grok CLI proxy the subscription
+  is for (`cli-chat-proxy.grok.com`), and that proxy answers `426` to a request that names no
+  recent Grok CLI, so `x-grok-client-version` rides every request with a pinned floor and
+  `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` to raise it. An `XAI_API_KEY` setup keeps pi's own
+  provider, which these aliases shadow only while an account is stored.
+
 ## 0.8.49 - 2026-11-14
 
 - The account-change notice is a plain line now, and an info instead of a warning:

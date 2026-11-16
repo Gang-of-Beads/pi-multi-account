@@ -65,7 +65,7 @@ A pool named `anthropic` deliberately replaces the native Anthropic provider, so
 
 | Command | Purpose |
 | --- | --- |
-| `/accounts` | Add, switch, rename, re-login, or remove named OAuth accounts; add one to a pool |
+| `/accounts` | Add, switch, rename, re-login, or remove named OAuth accounts (anthropic, codex, xai, copilot); add one to a pool |
 | `/sub-accounts` | List Claude Code accounts available for import |
 | `/sub-import [name...]` | Import detected accounts; names accept `A-Za-z0-9._-` (max 64 chars) |
 | `/anthropic-account-providers` | Re-sync `anthropic-<name>` entries in `/model` |
@@ -89,6 +89,7 @@ Design only for now: [`docs/design/subscription-gateway.md`](docs/design/subscri
 | `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide `anthropic-<name>` providers |
 | `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable pools |
 | `PI_MULTI_ACCOUNT_SHAPE` | enabled | Set to `0` to stop de-fingerprinting the request body and stripping transcribed reasoning. The billing header and the errored-tool-result fix still apply. See [Request shaping](#request-shaping) |
+| `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` | the pinned floor | Raises the Grok CLI version the xAI aliases claim. The proxy refuses older clients with 426; a floor, never a downgrade |
 | `PI_MULTI_ACCOUNT_CODEX_FAST` | off | Set to `1` to send Codex Fast mode (`service_tier: priority`) on every Codex request. `/fast off` still overrides it for the session |
 | `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Pool definitions file |
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
@@ -110,6 +111,15 @@ tail -f ~/.pi/agent/pi-multi-account.log
 A Claude model ships days before pi-ai's data does. `src/models.ts` carries the missing ones so they appear in `/model` on the `anthropic` pool provider, with the window, output ceiling, price and effort support Anthropic shipped them with. Today that is `claude-fable-5-2` (2026-11-09): 1M window, 128k output, $8/$40, always-on adaptive thinking, and the version floor below is what the gateway needs for it.
 
 What such a model needs from here, in order: the catalogue entry, a floor at or above the Claude Code release that introduced it (`ANTHROPIC_CLI_VERSION_MIN`, or the pin once it is common), and a live check that shaping still passes. Fable 5.2 answers an edited system prompt followed by a stored thinking block with `200`, not the `400` its release note warns about, measured on two turns with `AGENTS.md` rewritten in between.
+
+## Grok (xAI subscription)
+
+`/accounts` can log in a SuperGrok / X Premium account (xAI's device-code flow) and it appears as `xai` and `xai-<account>` in `/model`. Two things differ from an API-key setup, both because of the subscription:
+
+- a subscription token is refused by `api.x.ai` ("you need a Grok subscription"), so the aliases talk to the Grok CLI proxy those subscriptions are for — an `XAI_API_KEY` user keeps pi's own provider;
+- that proxy refuses a request that names no recent Grok CLI (HTTP 426), so every request carries `x-grok-client-version`. The floor is pinned; `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` raises it when xAI moves the minimum.
+
+`PI_MULTI_ACCOUNT_XAI_ALIASES=0` hides the aliases.
 
 ## Request shaping
 
