@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.49 - 2026-11-14
 
 - The account-change notice is a plain line now, and an info instead of a warning:
   `Anthropic accounts: active account changed (none) → work.` An account switch is expected
