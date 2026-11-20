@@ -1,8 +1,12 @@
 # pi-multi-account
 
-A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription billing, and optional account failover.
+A shared multi-account model runtime, a [pi](https://pi.dev) extension, and an optional subscription API gateway. Pure extension use needs no HTTP server or extra agent session.
 
-- Manage Anthropic, GitHub Copilot, and OpenAI Codex accounts with `/accounts`.
+See the [gateway and v1 architecture guide](docs/gateway.md) for standalone operation, routing, protocol compatibility and security limits.
+
+- Manage Anthropic, ChatGPT Codex, xAI/Grok and GitHub Copilot accounts with `/accounts`.
+- Discover new models from account-specific vendor catalogs; enrich metadata from models.dev and retain an offline cache.
+- Share route scheduling and pre-output failover between Pi's `pma/<route>` models and the optional HTTP gateway.
 - Import existing Claude Code sign-ins and expose pinned `anthropic-<name>` providers in `/model`.
 - Send Claude Code-style billing metadata for Anthropic OAuth (`sk-ant-oat...`) requests.
 - Shape the request body so Anthropic's payload classifier stops answering with `You're out of extra usage` or the `reasoning_extraction` refusal. See [Request shaping](#request-shaping).
@@ -10,7 +14,7 @@ A [pi](https://pi.dev) package for named OAuth accounts, Claude subscription bil
 
 ## Compatibility
 
-- Tested with pi `1.1.0`, `1.3.0`, `1.4.0` and `1.5.0`
+- v1 uses Pi `1.5.0` or newer provider/registry APIs; keep v0.8.x if you need an older Pi
 - Runs directly as TypeScript through pi's `jiti` loader
 - Claude Code credentials are discovered from macOS Keychain or `~/.claude/.credentials.json`
 
@@ -69,7 +73,10 @@ A pool named `anthropic` deliberately replaces the native Anthropic provider, so
 | `/sub-accounts` | List Claude Code accounts available for import |
 | `/sub-import [name...]` | Import detected accounts; names accept `A-Za-z0-9._-` (max 64 chars) |
 | `/anthropic-account-providers` | Re-sync `anthropic-<name>` entries in `/model` |
-| `/pools` | List aggregate pools |
+| `/pools` | List legacy Anthropic aggregate pools |
+| `/pma-models` | Refresh live subscription model catalogs |
+| `/routes [add <id> <provider/model>...]` | List or create shared cross-provider routes |
+| `/gateway start [port]`, `stop`, `status`, `key` | Explicitly manage an optional HTTP listener and caller keys |
 | `/fast [on\|off\|status]` | Codex Fast mode for this session; see [Codex Fast mode](#codex-fast-mode) |
 | `/pool-create [name] [accounts...]` | Create a pool; omitted accounts can be chosen interactively |
 | `/pool-add`, `/pool-remove`, `/pool-delete` | Change or delete a pool |
@@ -78,7 +85,11 @@ Imported credentials are read-only: this package never writes into Claude Code's
 
 ## Subscriptions as an API
 
-Design only for now: [`docs/design/subscription-gateway.md`](docs/design/subscription-gateway.md) turns the pool that already fails over across accounts into an HTTP endpoint with a fallback chain, weighted aggregation and per-caller keys, so another client can use the same subscriptions. It also records why the xAI subscription (SuperGrok / X Premium, already implemented in pi-ai as `pi auth login xai`) needs an adapter here before it can be pooled, and lists the phases and the risks.
+The optional gateway serves Messages, Chat Completions and Responses using the same core as the extension. `/gateway start` starts a session-owned loopback listener; `pi-multi-account serve` runs independently. Neither starts an agent loop or executes client tools. Caller keys are mandatory, hashed at rest and can be scoped to routes/models.
+
+Use `/routes add daily codex/gpt-6.2-sol xai/grok-4.7`, then select `pma/daily` in Pi or send `"model":"daily"` over HTTP. Advanced routes support ordered, rotating, weighted and observed-usage scheduling, explicit accounts and account groups.
+
+Read [the full guide](docs/gateway.md) before sharing subscriptions. Native protocols are preserved where possible; translation has explicit rejection boundaries and is not lossless for every vendor feature. The gateway is not started automatically.
 
 ## Configuration
 
@@ -86,21 +97,23 @@ Design only for now: [`docs/design/subscription-gateway.md`](docs/design/subscri
 | --- | --- | --- |
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT` | enabled | Set to `0` to disable first-run import |
 | `PI_MULTI_ACCOUNT_AUTO_IMPORT_NAMES` | unset | Comma/space-separated first-run aliases; imports without prompting |
-| `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide `anthropic-<name>` providers |
+| `PI_MULTI_ACCOUNT_ALIASES` | enabled | Set to `0` to hide named-account alias registrations in Pi |
 | `PI_MULTI_ACCOUNT_FAILOVER` | enabled | Set to `0` to disable pools |
 | `PI_MULTI_ACCOUNT_SHAPE` | enabled | Set to `0` to stop de-fingerprinting the request body and stripping transcribed reasoning. The billing header and the errored-tool-result fix still apply. See [Request shaping](#request-shaping) |
-| `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` | the pinned floor | Raises the Grok CLI version the xAI aliases claim. The proxy refuses older clients with 426; a floor, never a downgrade |
+| `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` | the pinned floor | Raises the Grok CLI version claimed on xAI requests. The proxy refuses older clients with 426; a floor, never a downgrade. The published stable Grok CLI version is also followed |
+| `PI_OFFLINE` | off | Set to `1` to stop catalog discovery network traffic; cached and built-in models stay usable |
+| `--host`, `--port`, `--agent-dir` | loopback, 8787 | `serve` flags only; `--agent-dir` also moves the key/route/ledger files. See [the gateway guide](docs/gateway.md) |
 | `PI_MULTI_ACCOUNT_CODEX_FAST` | off | Set to `1` to send Codex Fast mode (`service_tier: priority`) on every Codex request. `/fast off` still overrides it for the session |
 | `PI_MULTI_ACCOUNT_POOLS_FILE` | `~/.pi/agent/pi-multi-account-pools.json` | Pool definitions file |
 | `PI_MULTI_ACCOUNT_BACKGROUND_REFRESH` | enabled | Set to `0` on a secondary install sharing the account store |
 | `PI_MULTI_ACCOUNT_LOG` | `info` | `debug` enables request diagnostics; `0`/`off` disables logs |
 | `PI_MULTI_ACCOUNT_LOG_FILE` | `~/.pi/agent/pi-multi-account.log` | JSONL diagnostics file |
 | `ANTHROPIC_CLI_VERSION_MIN` | the highest of the pinned `2.1.322`, a local `claude --version`, and this value | Raises the version claimed in the billing header and the user-agent. It is a floor, never a downgrade: a value below the pin or below a local claude is ignored. The gateway enforces a per-model minimum (`claude_code_version_too_old`), so only a claim at or above it reaches a new model. An exact version comes from `ANTHROPIC_USER_AGENT` instead |
-| `CODEX_CLIENT_VERSION_MIN` | the highest of the pinned `0.162.1`, a local `codex --version`, and this value | Raises the Codex CLI version the ChatGPT `/codex/models` catalog request claims. The catalog hides newer models from older clients, and a model missing from it keeps pi's base window (272k) instead of the account's maximum. A floor, never a downgrade; a value that is not a dotted version such as `0.163.0` is ignored |
+| `CODEX_CLIENT_VERSION_MIN` | the highest of the pinned `0.170.0`, cached npm latest, a local `codex --version`, and this value | Raises the Codex CLI version the ChatGPT `/codex/models` catalog request claims. The catalog hides newer models from older clients, and a model missing from it keeps pi's base window (272k) instead of the account's maximum. A floor, never a downgrade; a value that is not a dotted version such as `0.163.0` is ignored |
 | `CLAUDE_CODE_ENTRYPOINT` | `sdk-cli` | User-agent entrypoint override |
 | `ANTHROPIC_USER_AGENT` | generated | Complete user-agent override. It is the last word: the `claude-cli/<version>` it names becomes the billing header's `cc_version` too, so the two cannot disagree |
 
-The account store is `~/.pi/agent/pi-accounts.json`. Each Codex account's context windows from its last catalog are kept in `~/.pi/agent/pi-multi-account-codex-catalog.json`, so the `codex` providers register with them when the extension loads. An account with no cached catalog is fetched at load (at most 3 s, not with `PI_OFFLINE`); no token is refreshed at load, so an account whose token is about to expire waits for the session-start sync. Logs never contain tokens; they use short SHA-256 fingerprints. Inspect them with:
+The account store remains `~/.pi/agent/pi-accounts.json`. Full, non-secret model snapshots are kept in `pi-multi-account-catalog.json`; the old Codex window cache remains readable. Bootstrap uses cached/built-in models and bounded discovery with already-live tokens; it does not rotate expiring named tokens. `PI_OFFLINE=1` disables discovery network traffic. Logs use short SHA-256 credential fingerprints, never raw tokens. Inspect them with:
 
 ```bash
 tail -f ~/.pi/agent/pi-multi-account.log
@@ -108,18 +121,18 @@ tail -f ~/.pi/agent/pi-multi-account.log
 
 ## New models
 
-A Claude model ships days before pi-ai's data does. `src/models.ts` carries the missing ones so they appear in `/model` on the `anthropic` pool provider, with the window, output ceiling, price and effort support Anthropic shipped them with. Today that is `claude-fable-5-2` (2026-11-09): 1M window, 128k output, $8/$40, always-on adaptive thinking, and the version floor below is what the gateway needs for it.
+Model IDs no longer have to wait for a pi-ai or plugin release. Codex and Grok query their account's vendor catalog; vendor metadata takes priority and models.dev fills missing facts. `/pma-models` forces a refresh. Cached catalogs remain available offline, and an older client-version claim cannot hide new Codex models when a newer CLI/npm version is known.
 
-What such a model needs from here, in order: the catalogue entry, a floor at or above the Claude Code release that introduced it (`ANTHROPIC_CLI_VERSION_MIN`, or the pin once it is common), and a live check that shaping still passes. Fable 5.2 answers an edited system prompt followed by a stored thinking block with `200`, not the `400` its release note warns about, measured on two turns with `AGENTS.md` rewritten in between.
+Anthropic subscription entitlements are less discoverable: only models its endpoint listed are offered, with models.dev enriching their metadata, and a failed discovery keeps the last good or built-in catalogue instead of inventing IDs. Existing entries in `src/models.ts` remain an offline safety net, not the main update mechanism. Unknown prices are unpriced (numeric zero for Pi's required schema), not evidence that a model is free. New wire protocols or compatibility requirements can still require an update. See [model discovery and its limits](docs/gateway.md#model-discovery).
 
 ## Grok (xAI subscription)
 
 `/accounts` can log in a SuperGrok / X Premium account (xAI's device-code flow) and it appears as `xai` and `xai-<account>` in `/model`. Two things differ from an API-key setup, both because of the subscription:
 
 - a subscription token is refused by `api.x.ai` ("you need a Grok subscription"), so the aliases talk to the Grok CLI proxy those subscriptions are for — an `XAI_API_KEY` user keeps pi's own provider;
-- that proxy refuses a request that names no recent Grok CLI (HTTP 426), so every request carries `x-grok-client-version`. The floor is pinned; `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` raises it when xAI moves the minimum.
+- that proxy refuses a request that names no recent Grok CLI (HTTP 426), so every request carries `x-grok-client-version`. The floor also follows Grok's published stable CLI version; `PI_MULTI_ACCOUNT_GROK_CLI_VERSION` can raise it explicitly.
 
-`PI_MULTI_ACCOUNT_XAI_ALIASES=0` hides the aliases.
+`PI_MULTI_ACCOUNT_ALIASES=0` hides them with the other aliases; `PI_MULTI_ACCOUNT_XAI_ALIASES=0` hides only these.
 
 ## Request shaping
 
@@ -200,3 +213,4 @@ pi -e /absolute/path/to/pi-multi-account
 - Multi-account runtime: [`@narumitw/pi-accounts`](https://www.npmjs.com/package/@narumitw/pi-accounts)
 - Billing and credential-discovery code adapted from [`pi-claude-auth`](https://github.com/pankajudhas81/pi-claude-auth) (MIT); see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
 - Request shaping (`src/anthropic-shape.ts`) ported in spirit from [`gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth) (MIT)
+- Shared catalog/provider/gateway architecture informed by [`yetone/magpie`](https://github.com/yetone/magpie) (independently implemented here)

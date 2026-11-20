@@ -395,7 +395,7 @@ export function accountsNeedingRelogin(providerId: string, accountNames: Iterabl
  * fine. Callers now share the in-flight refresh, so the lock sees one writer
  * instead of a crowd.
  */
-const inFlightRefreshes = new Map<string, Promise<OAuthCredential>>();
+const inFlightRefreshes = new WeakMap<AccountStore, Map<string, Promise<OAuthCredential>>>();
 
 export async function refreshAccountCredential(
 	store: AccountStore,
@@ -405,12 +405,16 @@ export async function refreshAccountCredential(
 	now = Date.now(),
 	options: { force?: boolean } = {},
 ): Promise<OAuthCredential> {
-	const key = `${provider.id}\u0000${accountName}\u0000${options.force === true ? "force" : "due"}`;
-	const running = inFlightRefreshes.get(key);
+	const key = `${provider.id}\u0000${accountName}`;
+	let flights = inFlightRefreshes.get(store);
+	if (!flights) { flights = new Map(); inFlightRefreshes.set(store, flights); }
+	const running = flights.get(key);
 	if (running !== undefined) return running;
-	const attempt = refreshAccountCredentialOnce(store, provider, accountName, credential, now, options)
-		.finally(() => { inFlightRefreshes.delete(key); });
-	inFlightRefreshes.set(key, attempt);
+	const locked = store as AccountStore & { withCredentialRefreshLock?<T>(provider: string, account: string, task: () => Promise<T>): Promise<T> };
+	const rotate = () => refreshAccountCredentialOnce(store, provider, accountName, credential, now, options);
+	const attempt = (locked.withCredentialRefreshLock ? locked.withCredentialRefreshLock(provider.id, accountName, rotate) : rotate())
+		.finally(() => { flights!.delete(key); });
+	flights.set(key, attempt);
 	return attempt;
 }
 
@@ -464,7 +468,7 @@ async function refreshAccountCredentialOnce(
 
 	let refreshed: OAuthCredential;
 	try {
-		refreshed = await provider.oauth.refresh(current, new AbortController().signal);
+		refreshed = await provider.oauth.refresh(current, AbortSignal.timeout(30_000));
 		clearRefreshFailure(provider.id, accountName);
 		storeObserver(provider.id).expectSelfChange(`refresh ${accountName}`);
 		logInfo("refresh.succeeded", {

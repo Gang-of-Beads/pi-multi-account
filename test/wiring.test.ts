@@ -20,6 +20,7 @@ process.env.PI_MULTI_ACCOUNT_LOG = "debug";
 process.env.PI_MULTI_ACCOUNT_LOG_FILE = logFile;
 // A stub host has no keychain flow to complete, and no accounts to import.
 process.env.PI_MULTI_ACCOUNT_AUTO_IMPORT = "0";
+process.env.PI_OFFLINE = "1";
 
 const { default: extension } = await import("../src/index.ts");
 

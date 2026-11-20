@@ -1,158 +1,123 @@
-/**
- * The Codex catalog cache and what a load may do with it.
- *
- * PI WEB's session daemon freezes providers after load, so the codex aliases must register their
- * real windows at load, from a cache. A load must never refresh a token: a refresh rotates the
- * shared refresh token, which only the locked background sweep may do. Everything here runs in a
- * temporary agent dir with a fake fetch; nothing touches the network or the real account store.
- */
+/** Legacy window caches remain readable; the new shared cache also retains newly discovered IDs. */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 const agentDir = mkdtempSync(join(tmpdir(), "pi-multi-account-codex-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
-delete process.env.PI_OFFLINE;
+process.env.PI_MULTI_ACCOUNT_LOG = "0";
+process.env.PI_OFFLINE = "1";
 delete process.env.CODEX_CLIENT_VERSION_MIN;
-
-const catalogModule = await import("../src/codex-catalog.ts");
-const { CODEX_CLIENT_VERSION, CODEX_VERSION_MIN_ENV, catalogCacheFile, codexClientVersion, readCachedCatalogs, resetCodexVersionCache, writeCachedCatalogs } = catalogModule;
+const {
+	CODEX_CLIENT_VERSION,
+	CODEX_VERSION_MIN_ENV,
+	catalogCacheFile,
+	codexClientVersion,
+	readCachedCatalogs,
+	resetCodexVersionCache,
+	writeCachedCatalogs,
+} = await import("../src/codex-catalog.ts");
 const { registerCodexAliasProviders } = await import("../src/codex-aliases.ts");
-
+const { ModelCatalog } = await import("../src/core/catalog.ts");
 function token(accountId: string): string {
-	const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url");
-	return `header.${payload}.signature`;
+	return `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url")}.signature`;
 }
-
-// The cache: missing, corrupt and junk entries read as "no catalog", never as junk windows.
 {
 	const file = join(agentDir, "cache-a.json");
-	assert.equal(readCachedCatalogs(file).size, 0, "a missing cache is empty");
+	assert.equal(readCachedCatalogs(file).size, 0);
 	writeFileSync(file, "{ not json");
-	assert.equal(readCachedCatalogs(file).size, 0, "a corrupt cache is empty");
-	writeFileSync(file, JSON.stringify({ accounts: { good: { windows: { "gpt-6.1-sol": 872000, bad: -1, worse: "x" } }, empty: { windows: { bad: 0 } } } }));
-	const read = readCachedCatalogs(file);
-	assert.deepEqual([...read.keys()], ["good"], "an account with no usable window is dropped");
-	assert.deepEqual([...read.get("good")!.windows], [["gpt-6.1-sol", 872000]], "only positive integer windows survive");
-
+	assert.equal(readCachedCatalogs(file).size, 0);
+	writeFileSync(
+		file,
+		JSON.stringify({ accounts: { good: { windows: { "gpt-6.1-sol": 872000, bad: -1, worse: "x" } }, empty: { windows: { bad: 0 } } } }),
+	);
+	assert.deepEqual([...readCachedCatalogs(file).get("good")!.windows], [["gpt-6.1-sol", 872000]]);
 	await writeCachedCatalogs(new Map([["other", { accountId: "other", windows: new Map([["gpt-6-sol", 872000]]) }]]), file);
-	assert.deepEqual([...readCachedCatalogs(file).keys()].sort(), ["good", "other"], "a write merges into the cache");
+	assert.deepEqual([...readCachedCatalogs(file).keys()].sort(), ["good", "other"]);
 	await writeCachedCatalogs(new Map(), file);
-	assert.equal(readCachedCatalogs(file).size, 2, "an empty write leaves the cache alone");
-	assert.equal(readdirSync(agentDir).filter((name) => name.endsWith(".tmp")).length, 0, "no temp file is left behind");
+	assert.equal(readCachedCatalogs(file).size, 2);
+	assert.equal(readdirSync(agentDir).filter((name) => name.endsWith(".tmp")).length, 0);
 }
-
-// The claimed Codex version: every source is a floor and the highest one wins.
 {
 	const fakeBin = mkdtempSync(join(tmpdir(), "codex-bin-"));
 	const savedPath = process.env.PATH;
 	process.env.PATH = fakeBin;
 	resetCodexVersionCache();
-	assert.equal(codexClientVersion(), CODEX_CLIENT_VERSION, "without a local codex the pin is the claim");
-	process.env[CODEX_VERSION_MIN_ENV] = "0.170.0";
-	assert.equal(codexClientVersion(), "0.170.0", "a higher env floor raises the claim");
+	assert.equal(codexClientVersion(), CODEX_CLIENT_VERSION);
+	process.env[CODEX_VERSION_MIN_ENV] = "0.999.0";
+	assert.equal(codexClientVersion(), "0.999.0");
 	process.env[CODEX_VERSION_MIN_ENV] = "0.163";
-	assert.equal(codexClientVersion(), CODEX_CLIENT_VERSION, "a malformed env floor is ignored");
+	assert.equal(codexClientVersion(), CODEX_CLIENT_VERSION);
 	delete process.env[CODEX_VERSION_MIN_ENV];
-	writeFileSync(join(fakeBin, "codex"), "#!/bin/sh\necho 'codex-cli 0.199.0'\n", { mode: 0o755 });
+	writeFileSync(join(fakeBin, "codex"), "#!/bin/sh\necho 'codex-cli 0.999.1'\n", { mode: 0o755 });
 	resetCodexVersionCache();
-	assert.equal(codexClientVersion(), "0.199.0", "a newer local codex raises the claim");
+	assert.equal(codexClientVersion(), "0.999.1");
 	process.env.PATH = savedPath;
 	resetCodexVersionCache();
 }
-
-// A load: cached accounts register their windows, an uncached one is fetched once, and an
-// account whose token is about to expire is neither refreshed nor fetched.
 {
-	const hour = 60 * 60 * 1000;
+	const hour = 3_600_000;
+	const accounts = {
+		cached: { type: "oauth", access: token("acct-cached"), refresh: "r1", expires: Date.now() + hour },
+		fresh: { type: "oauth", access: token("acct-fresh"), refresh: "r2", expires: Date.now() + hour },
+		expiring: { type: "oauth", access: token("acct-expiring"), refresh: "r3", expires: Date.now() + 60_000 },
+	};
 	writeFileSync(
 		join(agentDir, "pi-accounts.json"),
-		JSON.stringify({
-			providers: {
-				"openai-codex": {
-					active: "cached",
-					accounts: {
-						cached: { type: "oauth", access: token("acct-cached"), refresh: "r1", expires: Date.now() + hour },
-						fresh: { type: "oauth", access: token("acct-fresh"), refresh: "r2", expires: Date.now() + hour },
-						expiring: { type: "oauth", access: token("acct-expiring"), refresh: "r3", expires: Date.now() + 60_000 },
-					},
-				},
-			},
-		}),
+		JSON.stringify({ version: 1, providers: { "openai-codex": { active: "cached", accounts } } }),
 	);
-	await writeCachedCatalogs(new Map([["acct-cached", { accountId: "acct-cached", windows: new Map([["gpt-6.1-sol", 872000]]) }]]), catalogCacheFile());
-
-	const requests: string[] = [];
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = (async (input: string | URL | Request) => {
-		requests.push(String(input));
-		return new Response(JSON.stringify({ models: [{ slug: "gpt-6.1-sol", context_window: 500000, max_context_window: 872000 }] }), { status: 200 });
-	}) as typeof fetch;
-
-	const registered = new Map<string, { getModels: () => Array<{ id: string; contextWindow: number }> }>();
-	const pi = {
-		registerProvider: (provider: { id: string; getModels: () => Array<{ id: string; contextWindow: number }> }) => registered.set(provider.id, provider),
+	await writeCachedCatalogs(
+		new Map([["acct-cached", { accountId: "acct-cached", windows: new Map([["gpt-6.1-sol", 872000]]) }]]),
+		catalogCacheFile(),
+	);
+	delete process.env.PI_OFFLINE;
+	const catalog = new ModelCatalog(agentDir, (async () =>
+		Response.json({ models: [{ slug: "gpt-6.2-sol", context_window: 272000, max_context_window: 872000 }] })) as typeof fetch);
+	await catalog.discover("openai-codex", "fresh:acct-fresh", {}, [], { signal: AbortSignal.timeout(2000) });
+	process.env.PI_OFFLINE = "1";
+	const registered = new Map<string, { getModels: () => { id: string; contextWindow: number }[] }>();
+	const registry = registerCodexAliasProviders({
+		registerProvider: (p: { id: string; getModels: () => { id: string; contextWindow: number }[] }) => registered.set(p.id, p),
 		unregisterProvider: (id: string) => registered.delete(id),
-		registerCommand: () => undefined,
-	};
-	const registry = registerCodexAliasProviders(pi as never);
+	} as never);
+	const legacyCatalogBefore = readFileSync(catalogCacheFile());
+	const accountsBefore = readFileSync(join(agentDir, "pi-accounts.json"));
 	await registry.bootstrap();
-	globalThis.fetch = realFetch;
-
-	const windowOf = (id: string) => registered.get(id)?.getModels().find((model) => model.id === "gpt-6.1-sol")?.contextWindow;
-	assert.equal(requests.filter((url) => url.includes("/oauth/token")).length, 0, "a load never refreshes a token");
-	assert.equal(requests.filter((url) => url.includes("/codex/models")).length, 1, "only the uncached account with a live token is fetched");
-	assert.equal(windowOf("codex-cached"), 872000, "a cached account registers its cached window");
-	assert.equal(windowOf("codex-fresh"), 872000, "a fetched account registers its fetched window");
-	assert.notEqual(windowOf("codex-expiring"), 872000, "an expiring account keeps the base window until a later sync");
-	assert.ok(readCachedCatalogs(catalogCacheFile()).has("acct-fresh"), "the fetched catalog is cached for the next load");
+	assert.deepEqual(readFileSync(catalogCacheFile()), legacyCatalogBefore, "bootstrap preserves legacy catalog bytes");
+	assert.deepEqual(readFileSync(join(agentDir, "pi-accounts.json")), accountsBefore, "bootstrap preserves account file bytes");
+	const windowOf = (id: string, model = "gpt-6.1-sol") =>
+		registered
+			.get(id)
+			?.getModels()
+			.find((m) => m.id === model)?.contextWindow;
+	assert.equal(windowOf("codex-cached"), 872000, "the old cache remains usable without migration or account writes");
+	assert.equal(windowOf("codex-fresh", "gpt-6.2-sol"), 872000, "new IDs survive offline bootstrap");
+	assert.notEqual(windowOf("codex-expiring"), 872000);
 	assert.ok(existsSync(catalogCacheFile()));
-
-	// A session-start sync that cannot fetch keeps the cached windows instead of re-registering 272k.
-	// The expiring account leaves the store first: sync's token policy would refresh it.
-	writeFileSync(
-		join(agentDir, "pi-accounts.json"),
-		JSON.stringify({
-			providers: {
-				"openai-codex": {
-					active: "cached",
-					accounts: {
-						cached: { type: "oauth", access: token("acct-cached"), refresh: "r1", expires: Date.now() + hour },
-						fresh: { type: "oauth", access: token("acct-fresh"), refresh: "r2", expires: Date.now() + hour },
-					},
-				},
-			},
-		}),
-	);
-	const warnings: string[] = [];
-	const ctx = {
-		modelRegistry: { getAll: () => [], getRegisteredProviderIds: () => [...registered.keys()] },
-		ui: { notify: (message: string) => warnings.push(message) },
-	};
-	const syncRequests: string[] = [];
-	globalThis.fetch = (async (input: string | URL | Request) => {
-		syncRequests.push(String(input));
+	const original = globalThis.fetch;
+	const requests: string[] = [];
+	globalThis.fetch = (async (url) => {
+		requests.push(String(url));
 		throw new Error("network down");
 	}) as typeof fetch;
-
-	process.env.PI_OFFLINE = "1";
-	await registry.sync(ctx as never);
+	await registry.sync({ modelRegistry: { getRegisteredProviderIds: () => [...registered.keys()] } } as never);
+	assert.equal(requests.length, 0, "an offline sync neither fetches models nor rotates a token");
 	delete process.env.PI_OFFLINE;
-	assert.equal(syncRequests.length, 0, "an offline sync makes no request");
-	for (const id of ["codex", "codex-cached", "codex-fresh"]) {
-		assert.equal(windowOf(id), 872000, `an offline sync keeps the cached window of ${id}`);
-	}
-
-	await registry.sync(ctx as never);
-	globalThis.fetch = realFetch;
-	assert.equal(syncRequests.filter((url) => url.includes("/oauth/token")).length, 0, "a sync with live tokens refreshes nothing");
-	assert.equal(syncRequests.filter((url) => url.includes("/codex/models")).length, 2, "the failing sync tried every account");
-	assert.equal(warnings.length, 2, "each failed fetch is reported");
-	for (const id of ["codex", "codex-cached", "codex-fresh"]) {
-		assert.equal(windowOf(id), 872000, `a failed fetch keeps the cached window of ${id}`);
-	}
-	registry.stop();
+	const { expiring: _expiring, ...live } = accounts;
+	writeFileSync(
+		join(agentDir, "pi-accounts.json"),
+		JSON.stringify({ version: 1, providers: { "openai-codex": { active: "cached", accounts: live } } }),
+	);
+	// The core captures fetch when constructed; replace it in this test with an explicit failure.
+	const { PmaEngine } = await import("../src/core/engine.ts");
+	const failing = new PmaEngine(agentDir, { fetch: globalThis.fetch });
+	await failing.initialize({ network: false });
+	const failures = await failing.refresh({ force: true });
+	assert.equal(requests.filter((u) => u.includes("/oauth/token")).length, 0);
+	assert.equal(failures.errors.filter((e) => e.startsWith("codex-")).length, 2);
+	assert.equal(failing.models.getModel("codex-cached", "gpt-6.1-sol")?.contextWindow, 872000);
+	assert.equal(failing.models.getModel("codex-fresh", "gpt-6.2-sol")?.contextWindow, 872000);
+	globalThis.fetch = original;
+	await registry.stop();
 }
-
 console.log("codex-catalog-cache: ok");

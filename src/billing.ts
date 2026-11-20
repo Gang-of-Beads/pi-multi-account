@@ -31,6 +31,7 @@ import {
 	TRANSCRIPT_THINKING_MARKER,
 } from "./anthropic-shape.ts";
 import { highestVersion, isCliVersion, probeCliVersion } from "./cli-version.ts";
+import { publishedVersion } from "./core/catalog.ts";
 import { logDebug } from "./debug-log.ts";
 import { errorMessage } from "./errors.ts";
 
@@ -104,7 +105,7 @@ export function resetClaudeVersionCache(): void {
  * model's minimum. A malformed floor is dropped rather than put on the wire.
  */
 export function claimedCliVersion(...floors: Array<string | undefined>): string {
-	return highestVersion(CC_VERSION, ...floors);
+	return highestVersion(CC_VERSION, publishedVersion("anthropic"), ...floors);
 }
 
 /** The version a complete user-agent override names, if it names one. */

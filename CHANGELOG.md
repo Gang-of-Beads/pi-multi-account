@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.0.0 - 2026-11-19
+
+- **One shared runtime for the Pi extension and an optional standalone API gateway.**
+  Account providers, catalog discovery and route scheduling live in `src/core`; the Pi adapter
+  registers those providers and commands without creating a second agent session. Pure extension
+  use opens no listener. `/gateway start` explicitly creates a session-owned listener;
+  `pi-multi-account serve` runs independently under a user-chosen supervisor.
+- **Discover complete live catalogs, including GPT-6.2, without a release per model.** Codex,
+  Grok, Anthropic and Copilot discovery retain IDs and vendor capabilities instead of only
+  overlaying context windows on pi-ai's static list. models.dev enriches metadata; a failed Anthropic
+  discovery keeps the last good or built-in catalogue rather than inventing IDs. Client versions
+  follow validated published releases, local CLIs and environment floors. Full catalogs are cached
+  per identity, and the old Codex window cache remains readable. Unknown models never borrow
+  sibling prices.
+- **Shared cross-provider routes.** `pma/<route>` in Pi and the same route over HTTP support
+  ordered, rotating, weighted or observed-usage scheduling, explicit accounts or all accounts,
+  bounded conversation affinity, cancellation and pre-output-only failover. Legacy Anthropic
+  pool commands and files remain compatible.
+- **Authenticated Messages, Chat Completions and Responses APIs.** Native protocol bodies are
+  preserved where possible, including Codex's header-less event streams and sealed reasoning;
+  translated requests use pi-ai's transcript/provider contract. Unsupported stateful, sealed or
+  vendor-specific features fail explicitly, not by silently discarding them, and an upstream 429
+  keeps its own status and `Retry-After` instead of becoming a 502. Client tools are never executed
+  by the gateway.
+- **Private caller keys, scoped catalogs and admission accounting.** Keys are hashed at rest;
+  expiry/revocation, model scopes, RPM, token reservations and concurrency limits are checked
+  locally. The usage ledger contains counts and IDs, not prompts or secrets; corruption fails
+  closed instead of resetting quotas. A live listener owner is never evicted by a timestamp.
+- **Serialize credential rotation across processes, per account.** Concurrent due/forced
+  requests share one rotation while the shared account-file write lock remains short-lived.
+  Legacy pool mutation now also refuses corrupt files rather than rebuilding and overwriting
+  them as an empty store.
+- **Compatibility:** v1 requires Pi 1.5 or newer. No account or legacy pool migration is performed;
+  installing the extension does not start an HTTP service. An interrupted `/gateway start` cannot
+  leave an orphan listener after shutdown. See `docs/gateway.md` for API fidelity, unpriced models,
+  token-estimate limitations, deployment security and feature exclusions.
+- **Verified live** against real subscriptions: GPT-6.2 Sol over native streaming Responses, GPT-6.2
+  Astra over a non-streaming Responses request, a translated Chat turn, a translated Messages tool
+  call plus its result round trip, and a Grok turn. Both Claude accounts were under a provider 429
+  during release, so the Claude success path rests on recorded earlier runs plus wire tests.
+
 ## 0.8.50 - 2026-11-14
 
 - **Grok subscriptions work: `xai` and `xai-<account>` in `/model`.** The account is logged in

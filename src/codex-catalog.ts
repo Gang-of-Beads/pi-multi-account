@@ -14,6 +14,7 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { highestVersion, probeCliVersion } from "./cli-version.ts";
+import { CODEX_FLOOR, publishedVersion } from "./core/catalog.ts";
 import { BASE_URL } from "./codex-shared.ts";
 
 /**
@@ -23,7 +24,7 @@ import { BASE_URL } from "./codex-shared.ts";
  * gpt-6-luna (0.158+), so those stayed at 272k instead of 872k. Kept at the latest published
  * openai/codex release; bump when a release lands.
  */
-export const CODEX_CLIENT_VERSION = "0.162.1";
+export const CODEX_CLIENT_VERSION = CODEX_FLOOR;
 
 /** Raise the claimed Codex version without waiting for a release; a floor, like ANTHROPIC_CLI_VERSION_MIN. */
 export const CODEX_VERSION_MIN_ENV = "CODEX_CLIENT_VERSION_MIN";
@@ -45,7 +46,7 @@ export function resetCodexVersionCache(): void {
 
 /** The version to claim: the highest of the pin, the environment floor and a local Codex CLI. */
 export function codexClientVersion(): string {
-	return highestVersion(CODEX_CLIENT_VERSION, process.env[CODEX_VERSION_MIN_ENV], detectCodexVersion());
+	return highestVersion(CODEX_CLIENT_VERSION, publishedVersion("openai-codex"), process.env[CODEX_VERSION_MIN_ENV], detectCodexVersion());
 }
 
 export interface ContextCatalog {

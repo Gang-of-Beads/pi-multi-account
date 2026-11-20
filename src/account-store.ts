@@ -1,9 +1,11 @@
 import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readJson } from "./core/storage.ts";
 import { ACCOUNTS_FILE, type AccountsData, AccountStore, parseAccountsData } from "@narumitw/pi-accounts/src/account-store.ts";
-import type { AccountStorageBackend } from "@narumitw/pi-accounts/src/storage.ts";
+import { FileAccountStorageBackend, type AccountStorageBackend } from "@narumitw/pi-accounts/src/storage.ts";
 
 /**
  * Account store whose reads skip the cross-process write lock.
@@ -25,7 +27,18 @@ export class LocklessReadAccountStore extends AccountStore {
 		readonly filePath: string = join(getAgentDir(), ACCOUNTS_FILE),
 		backend?: AccountStorageBackend,
 	) {
-		super(backend);
+		super(backend ?? new FileAccountStorageBackend(filePath));
+	}
+
+	/** Serialize network rotations per account, not across the entire account file. */
+	async withCredentialRefreshLock<T>(provider: string, account: string, task: () => Promise<T>): Promise<T> {
+		const id = createHash("sha256").update(`${provider}\0${account}`).digest("hex").slice(0, 24);
+		return new FileAccountStorageBackend(`${this.filePath}.refresh-${id}`).withLockAsync(async () => ({ result: await task() }));
+	}
+
+	override read(): AccountsData {
+		const value = readJson<unknown>(this.filePath, undefined);
+		return parseAccountsData(value === undefined ? undefined : JSON.stringify(value));
 	}
 
 	override async readAsync(): Promise<AccountsData> {

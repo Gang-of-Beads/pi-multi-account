@@ -53,9 +53,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { LocklessReadAccountStore } from "./account-store.ts";
 import { registerAccountsCommandOverride } from "./accounts-menu.ts";
 import { anthropicAdapter, patchedProviders } from "./adapters.ts";
-import { ALIAS_PREFIX, registerAccountAliasProviders } from "./aliases.ts";
-import { registerCodexAliasProviders } from "./codex-aliases.ts";
-import { registerXaiAliasProviders } from "./xai-aliases.ts";
+import { ALIAS_PREFIX } from "./aliases.ts";
+import { registerPiProviders, sharedEngine } from "./pi-adapter.ts";
 import { attachShaping, registerBillingLayer } from "./billing.ts";
 import { applyCodexFast, fastEnabled, registerCodexFast } from "./codex-fast.ts";
 import { registerAnthropicModels } from "./models.ts";
@@ -314,19 +313,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Claude subscription billing (billing.ts).
 	registerBillingLayer(pi);
 
-	// Per-account provider aliases in the /model picker (aliases.ts). Registered
-	// here, before any session exists, so early model resolution can see them.
-	const aliases = registerAccountAliasProviders(pi, store);
+	// Account providers, live catalogs, route models and the optional HTTP listener all
+	// share the standalone service's core. Pool ownership of native Anthropic is preserved.
+	const core = sharedEngine(store);
+	const aliases = registerPiProviders(pi, core, { skipNativeAnthropic: () => readPools().some((pool) => pool.name === "anthropic") });
 	await aliases.bootstrap();
-
-	// The same for xAI accounts (xai-aliases.ts), and for Codex accounts (codex-aliases.ts):
-	// `xai`/`xai-<name>` and `codex`/`codex-<name>` clone
-	// pi's native provider so /accounts logins show up in /model.
-	const codexAliases = registerCodexAliasProviders(pi);
-	const xaiAliases = registerXaiAliasProviders(pi, store);
 	registerCodexFast(pi);
-	await codexAliases.bootstrap();
-	await xaiAliases.bootstrap();
 
 	// Account manager with explicit re-login and rename (accounts-menu.ts).
 	registerAccountsCommandOverride(pi, store, providers, aliases, refreshLoop, () => {
@@ -366,7 +358,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// the installed pi-ai data predates. Done here because a registration that
 			// sets `models` replaces the list, so it has to carry the whole thing.
 			try {
-				const registered = registerAnthropicModels(pi, ctx?.modelRegistry?.getAll?.());
+				const registered = registerAnthropicModels(pi, [...(ctx?.modelRegistry?.getAll?.() ?? []), ...core.models.getModels("anthropic")]);
 				if (!registered) logInfo("models.catalogue_skipped", { reason: "registry listed no anthropic models" });
 			} catch (error) {
 				logError("models.catalogue_failed", { detail: errorMessage(error) });
@@ -392,7 +384,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		try {
 			// Before any turn, so `/model` offers a model newer than the installed
 			// pi-ai data without waiting for one; the turn-start pass re-syncs it.
-			registerAnthropicModels(pi, ctx?.modelRegistry?.getAll?.());
+			registerAnthropicModels(pi, [...(ctx?.modelRegistry?.getAll?.() ?? []), ...core.models.getModels("anthropic")]);
 		} catch (error) {
 			logError("models.catalogue_failed", { detail: errorMessage(error) });
 		}
@@ -540,20 +532,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			console.error(`pi-multi-account: account providers were not loaded: ${errorMessage(error)}`);
 			ctx.ui.notify(`Account providers were not loaded: ${errorMessage(error)}`, "warning");
 		}
-		try {
-			await codexAliases.sync(ctx);
-		} catch (error) {
-			console.error(`pi-multi-account: codex providers were not loaded: ${errorMessage(error)}`);
-		}
-		try {
-			await xaiAliases.sync(ctx);
-		} catch (error) {
-			console.error(`pi-multi-account: xai providers were not loaded: ${errorMessage(error)}`);
-		}
 		// Follow the store from here on: a /accounts login in another session, or a sweep
 		// rotation, must reach /model without a /reload.
-		codexAliases.watchStore(ctx);
-		xaiAliases.watchStore(ctx);
+		aliases.watchStore(ctx);
 		try {
 			await poolSync.sync(ctx);
 		} catch (error) {
@@ -641,7 +622,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// convinced that a run is still in flight.
 		releaseRun(ctx);
 		refreshLoop.stop();
-		codexAliases.stop();
-		xaiAliases.stop();
+		await aliases.stop();
 	});
 }

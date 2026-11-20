@@ -127,7 +127,7 @@ export function asRegisteredModel(model: RegisteredModel): RegisteredModel {
  * one-model list, which is the failure that would hide every other Claude model.
  */
 export function registerAnthropicModels(pi: Pick<ExtensionAPI, "registerProvider">, models: readonly RegisteredModel[] | undefined): boolean {
-	const anthropic = (models ?? []).filter((model) => model.provider === "anthropic").map((model) => asRegisteredModel(model));
+	const anthropic = [...new Map((models ?? []).filter((model) => model.provider === "anthropic").map((model) => [model.id, asRegisteredModel(model)])).values()];
 	if (anthropic.length === 0) return false;
 	pi.registerProvider("anthropic", { models: withExtraModels(anthropic) });
 	return true;

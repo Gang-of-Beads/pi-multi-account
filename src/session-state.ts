@@ -16,6 +16,17 @@ const BILLING_STATUS_KEY = "pi-multi-account";
 
 export async function updateBillingStatus(store: AccountStore, ctx: ExtensionContext): Promise<void> {
 	try {
+		const selected = ctx.model?.provider;
+		if (selected === "pma") { ctx.ui.setStatus(BILLING_STATUS_KEY, `route: ${ctx.model?.id}`); return; }
+		if (selected && !isPoolProvider(selected) && selected !== "anthropic" && !selected.startsWith(ALIAS_PREFIX)) {
+			const family = (["codex", "xai", "copilot"] as const).find((id) => selected === id || selected.startsWith(`${id}-`));
+			if (!family) { ctx.ui.setStatus(BILLING_STATUS_KEY, undefined); return; }
+			const provider = family === "codex" ? "openai-codex" : family === "copilot" ? "github-copilot" : family;
+			const stored = await store.readProviderAsync(provider);
+			const name = selected === family ? stored.active : selected.slice(family.length + 1);
+			ctx.ui.setStatus(BILLING_STATUS_KEY, name ? `${family}: ${name} · subscription` : undefined);
+			return;
+		}
 		const state = await store.readProviderAsync("anthropic");
 		const failedAccounts = accountsNeedingRelogin("anthropic", Object.keys(state.accounts));
 		// Prefer the account bound to the selected alias: that is the account this
