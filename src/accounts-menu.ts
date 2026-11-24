@@ -555,22 +555,31 @@ async function addAccountToExistingPool(
 }
 
 /** Ask for a name, refuse reserved ones, and write a pool holding just this account. */
-async function createPoolFromAccount(
+export async function createPoolFromAccount(
 	ctx: ExtensionCommandContext,
 	accountName: string,
 	onPoolsChanged: () => void,
 ): Promise<string | undefined> {
-	const answer = await ctx.ui.input("Name for the new pool:", `${accountName}-pool`.slice(0, 64));
-	const requested = (answer ?? "").trim();
-	if (requested.length === 0) return undefined;
-	const checked = checkPoolName(requested);
-	if (!checked.ok) {
-		ctx.ui.notify(checked.error, "warning");
-		return undefined;
-	}
-	if (readPools().some((pool) => pool.name === requested)) {
-		ctx.ui.notify(`Pool "${requested}" already exists.`, "warning");
-		return undefined;
+	// Ask again on an empty, refused or taken name; cancelling the dialog is the way out.
+	let requested: string;
+	for (;;) {
+		const answer = await ctx.ui.input("Name for the new pool:", `${accountName}-pool`.slice(0, 64));
+		if (answer === undefined) return undefined;
+		requested = answer.trim();
+		if (requested.length === 0) {
+			ctx.ui.notify("A pool needs a name.", "warning");
+			continue;
+		}
+		const checked = checkPoolName(requested);
+		if (!checked.ok) {
+			ctx.ui.notify(checked.error, "warning");
+			continue;
+		}
+		if (readPools().some((pool) => pool.name === requested)) {
+			ctx.ui.notify(`Pool "${requested}" already exists.`, "warning");
+			continue;
+		}
+		break;
 	}
 	upsertPool({ name: requested, accounts: [accountName] });
 	onPoolsChanged();
