@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Creating a pool from the accounts menu asks again for an empty, illegal or taken name instead of dropping back to the list with only a warning.
+
 ## 1.0.0 - 2026-11-19
 
 - **One shared runtime for the Pi extension and an optional standalone API gateway.**

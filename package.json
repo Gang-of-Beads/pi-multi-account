@@ -1,76 +1,76 @@
 {
-  "name": "@gang-of-beads/pi-multi-account",
-  "version": "1.0.0",
-  "description": "Shared multi-account model runtime, Pi extension and optional subscription API gateway",
-  "bin": {
-    "pi-multi-account": "bin/pi-multi-account.mjs"
-  },
-  "exports": {
-    ".": "./src/core/index.ts",
-    "./extension": "./src/index.ts",
-    "./gateway": "./src/gateway/server.ts"
-  },
-  "license": "MIT",
-  "scripts": {
-    "test": "for f in test/*.test.ts; do npx jiti \"$f\" || exit 1; done",
-    "check": "tsc --noEmit",
-    "test:gateway": "jiti test/gateway.test.ts",
-    "serve": "node bin/pi-multi-account.mjs serve"
-  },
-  "type": "module",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "accounts",
-    "oauth",
-    "anthropic",
-    "claude",
-    "failover",
-    "pool",
-    "github-copilot",
-    "codex"
-  ],
-  "homepage": "https://github.com/Gang-of-Beads/pi-multi-account",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Gang-of-Beads/pi-multi-account.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Gang-of-Beads/pi-multi-account/issues"
-  },
-  "files": [
-    "src",
-    "bin",
-    "docs",
-    "test",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
-  ],
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "dependencies": {
-    "@narumitw/pi-accounts": "0.52.0",
-    "jiti": "^2.7.0"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.5.0",
-    "@earendil-works/pi-coding-agent": ">=1.5.0"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "^1.5.0",
-    "@earendil-works/pi-coding-agent": "^1.5.0",
-    "@earendil-works/pi-tui": "^1.5.0",
-    "@types/node": "^22.0.0",
-    "@types/proper-lockfile": "^4.1.4",
-    "typescript": "^5.6.0"
-  },
-  "author": "Gang of Beads",
-  "publishConfig": {
-    "access": "public"
-  }
+	"name": "@gang-of-beads/pi-multi-account",
+	"version": "1.0.1",
+	"description": "Shared multi-account model runtime, Pi extension and optional subscription API gateway",
+	"bin": {
+		"pi-multi-account": "bin/pi-multi-account.mjs"
+	},
+	"exports": {
+		".": "./src/core/index.ts",
+		"./extension": "./src/index.ts",
+		"./gateway": "./src/gateway/server.ts"
+	},
+	"license": "MIT",
+	"scripts": {
+		"test": "for f in test/*.test.ts; do npx jiti \"$f\" || exit 1; done",
+		"check": "tsc --noEmit",
+		"test:gateway": "jiti test/gateway.test.ts",
+		"serve": "node bin/pi-multi-account.mjs serve"
+	},
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"accounts",
+		"oauth",
+		"anthropic",
+		"claude",
+		"failover",
+		"pool",
+		"github-copilot",
+		"codex"
+	],
+	"homepage": "https://github.com/Gang-of-Beads/pi-multi-account",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Gang-of-Beads/pi-multi-account.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Gang-of-Beads/pi-multi-account/issues"
+	},
+	"files": [
+		"src",
+		"bin",
+		"docs",
+		"test",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		"THIRD_PARTY_NOTICES.md"
+	],
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"dependencies": {
+		"@narumitw/pi-accounts": "0.52.0",
+		"jiti": "^2.7.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": ">=1.5.0",
+		"@earendil-works/pi-coding-agent": ">=1.5.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^1.5.0",
+		"@earendil-works/pi-coding-agent": "^1.5.0",
+		"@earendil-works/pi-tui": "^1.5.0",
+		"@types/node": "^22.0.0",
+		"@types/proper-lockfile": "^4.1.4",
+		"typescript": "^5.6.0"
+	},
+	"author": "Gang of Beads",
+	"publishConfig": {
+		"access": "public"
+	}
 }
