@@ -12,6 +12,7 @@ const engine = {
 	agentDir: mkdtempSync(join(tmpdir(), "pma-adapter-")),
 	dynamicProviders: [],
 	accountProviders: [],
+	definitions: [],
 	syncAccounts: async () => {
 		calls.push("syncAccounts");
 	},

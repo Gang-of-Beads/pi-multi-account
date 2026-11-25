@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parseArgs } from "node:util";
 import { PmaEngine } from "./core/engine.ts";
 import { readRoutes, saveRoute, parseTarget } from "./core/routes.ts";
+import { addProviderDef, readProviderDefs, removeProviderDef } from "./core/provider-defs.ts";
 import { readJson } from "./core/storage.ts";
 import { createCallerKey, revokeCallerKey, keysPath } from "./gateway/access.ts";
 import { startGateway } from "./gateway/server.ts";
@@ -10,6 +12,9 @@ const HELP = `pi-multi-account
   serve [--host 127.0.0.1] [--port 8787]     Start the optional HTTP gateway
   models [refresh]                          List or refresh account models
   route add <id> <provider/model>...         Save an ordered route
+  provider list                             List user-defined providers (never keys)
+  provider add [<file|->]                    Add one from JSON (file, stdin, or as the next argument)
+  provider remove <id>                       Delete a definition
   route list                               List routes (edit JSON for other modes)
   key create <name> [route...] [--admin]     Print a new key once; default scope: *
   key list                                 List key metadata, never secrets
@@ -53,6 +58,35 @@ export async function main(argv: string[]): Promise<void> {
 				)}\n`,
 			);
 		} else throw new Error("Use key create <name> [route...], key list, or key revoke <id>");
+		return;
+	}
+	if (command === "provider") {
+		if (action === "list") {
+			const file = readProviderDefs(dir);
+			process.stdout.write(
+				`${JSON.stringify(
+					file.providers.map(({ id, name, api, baseUrl, models, auth }) => ({ id, name, api, baseUrl, models: models.length, auth: auth.kind })),
+					null,
+					2,
+				)}\n`,
+			);
+		} else if (action === "remove" && rest[0]) {
+			if (!(await removeProviderDef(dir, rest[0]))) throw new Error(`no provider "${rest[0]}"`);
+			process.stdout.write(`removed ${rest[0]}\n`);
+		} else if (action === "add") {
+			// From a file, stdin (`-`), or the argument itself: the definition is JSON, pasted whole when inline.
+			const readStdin = async (): Promise<string> =>
+				process.stdin.isTTY ? "" : new Promise<string>((resolve) => {
+					let text = "";
+					process.stdin.on("data", (chunk: Buffer) => { text += chunk.toString(); });
+					process.stdin.on("end", () => { resolve(text); });
+				});
+			const input = rest.join(" ");
+			const text = (input === "-" || input === "" ? await readStdin() : input.startsWith("{") ? input : readFileSync(input, "utf8")).trim();
+			if (!text) throw new Error("provider add needs a definition: a file path, - for stdin, or the JSON itself");
+			const added = await addProviderDef(dir, JSON.parse(text) as unknown);
+			process.stdout.write(`added ${added.id} (${added.api}, ${added.models.length} models)\n`);
+		} else throw new Error("Use provider list, provider add <file|->, or provider remove <id>");
 		return;
 	}
 	if (command === "route") {

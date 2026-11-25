@@ -26,6 +26,7 @@ import {
 } from "../refresh.ts";
 import { ModelCatalog, catalogKey, clientVersion, chatgptAccountId } from "./catalog.ts";
 import { readCachedCatalogs, applyContextWindows } from "../codex-catalog.ts";
+import { definitionToProvider, readProviderDefs, type ProviderDefinition } from "./provider-defs.ts";
 import { nativeCredentials, offline, readJson } from "./storage.ts";
 
 const ACTIVE: Record<string, string> = { anthropic: "anthropic", "openai-codex": "codex", xai: "xai", "github-copilot": "copilot" };
@@ -51,6 +52,8 @@ export class PmaEngine {
 	private owned = new Set<string>();
 	private baseline: Map<string, Provider>;
 	private nativeSnapshots = new Map<string, { identity: string; models: Model<Api>[] }>();
+	/** Providers the user defined; handed to Pi by the adapter and served by the gateway as they are. */
+	readonly definitions: readonly ProviderDefinition[];
 	private nativeProviders = new Map<string, Provider>();
 	constructor(
 		readonly agentDir: string,
@@ -60,6 +63,9 @@ export class PmaEngine {
 		this.catalog = new ModelCatalog(agentDir, options.fetch);
 		this.models = createModels({ credentials: nativeCredentials(join(agentDir, "auth.json")) });
 		this.baseline = new Map((options.providers ?? builtinProviders()).map((p) => [p.id, p]));
+		// User definitions join the baseline so an id resolves like a built-in one; a broken file fails
+		// the engine rather than silently routing to the wrong endpoint.
+		this.definitions = readProviderDefs(agentDir).providers;
 		for (const p of this.baseline.values()) {
 			const wrapped: Provider = {
 				...p,
@@ -76,6 +82,13 @@ export class PmaEngine {
 			this.nativeProviders.set(p.id, wrapped);
 			this.models.setProvider(wrapped);
 		}
+		// Definitions are static providers: no discovery, no account store, so they register untouched.
+		for (const definition of this.definitions) this.models.setProvider(definitionToProvider(definition));
+	}
+
+	/** Providers a definition owns; the adapter announces these, the engine never wraps them. */
+	private get definedProviders(): Provider[] {
+		return this.definitions.map(definitionToProvider);
 	}
 	private nativeSnapshot(id: string): Model<Api>[] | undefined {
 		if (!["anthropic", "openai-codex", "xai", "github-copilot"].includes(id)) return undefined;

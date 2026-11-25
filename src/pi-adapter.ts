@@ -1,6 +1,7 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { watch, statSync, type FSWatcher } from "node:fs";
 import type { AccountStore } from "@narumitw/pi-accounts/src/accounts.ts";
+import { definitionToProvider } from "./core/provider-defs.ts";
 import { PmaEngine } from "./core/engine.ts";
 import { readRoutes, RouteRouter, saveRoute, parseTarget } from "./core/routes.ts";
 import { createCallerKey } from "./gateway/access.ts";
@@ -70,6 +71,12 @@ export function registerPiProviders(
 				wanted.add(provider.id);
 				pi.registerProvider(provider);
 			}
+		// User-defined providers are Pi providers of their own: `relay/model` becomes selectable.
+		for (const definition of engine.definitions) {
+			if (!enabled(definition.id)) continue;
+			wanted.add(definition.id);
+			pi.registerProvider(definitionToProvider(definition));
+		}
 		for (const id of registered) if (!wanted.has(id) && !(id === "anthropic" && options.skipNativeAnthropic?.())) pi.unregisterProvider(id);
 		if (ctx)
 			for (const id of ctx.modelRegistry.getRegisteredProviderIds()) {
