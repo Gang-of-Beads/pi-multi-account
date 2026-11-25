@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+- Providers can be defined as data: `pi-multi-account-providers.json` in the agent directory holds an id, the api shape, a base URL, how a key reaches it and its models, all validated field by field so a typo fails the load instead of routing to the wrong endpoint. A definition registers as an ordinary provider and reaches routing, failover, the gateway and Pi's model list with no special case. `provider list|add|remove` manages the file; keys are never printed.
+
 ## 1.0.2
 
 - README: say what "standalone" means for `serve` (an independent process that still needs the Pi peer dependencies and an agent directory, not an independent install), and state plainly what Claude access rests on: a subscription OAuth token sent as Claude Code traffic, not an official API.
