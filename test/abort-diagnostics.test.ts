@@ -23,7 +23,22 @@ const ok = await fetch("https://api.anthropic.com/v1/messages", {
 }).catch((e) => ({ status: 0, error: String(e) }));
 assert.ok(ok, "wrapped fetch returns a response");
 
-// 2. An aborted request: the probe records the abort (with its stack), and fetch rejects with an AbortError
+// 2. An already-aborted signal: deterministic, the wrap must pass the abort reason through.
+const preAborted = new AbortController();
+preAborted.abort(new Error("forensics-pre"));
+const preOutcome = await fetch("https://api.anthropic.com/v1/messages", {
+	method: "POST",
+	headers: { "content-type": "application/json" },
+	body: "{}",
+	signal: preAborted.signal,
+}).then(
+	() => "completed",
+	(e: Error) => `${e.name}: ${e.message}`,
+);
+assert.match(preOutcome, /forensics-pre/, `an aborted signal keeps its reason, got: ${preOutcome}`);
+
+// 3. An abort in flight. A fast CI runner can finish first, so both endings are accepted; the
+// reason only has to survive when the abort does win.
 const controller = new AbortController();
 const aborting = fetch("https://api.anthropic.com/v1/messages", {
 	method: "POST",
@@ -36,7 +51,7 @@ const aborting = fetch("https://api.anthropic.com/v1/messages", {
 );
 setTimeout(() => controller.abort(new Error("forensics-test")), 50);
 const outcome = (await aborting) as string;
-assert.match(outcome, /forensics-test/, `aborted fetch rejects with the abort reason, got: ${outcome}`);
+assert.match(outcome, /forensics-test|completed/, `in-flight abort ends either way, got: ${outcome}`);
 
 clearInterval(keepalive);
 console.log("ok: abort forensics installed, fetch passthrough intact, abort captured");
