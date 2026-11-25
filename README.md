@@ -87,6 +87,8 @@ Imported credentials are read-only: this package never writes into Claude Code's
 
 The optional gateway serves Messages, Chat Completions and Responses using the same core as the extension. `/gateway start` starts a session-owned loopback listener; `pi-multi-account serve` runs independently. Neither starts an agent loop or executes client tools. Caller keys are mandatory, hashed at rest and can be scoped to routes/models.
 
+Independently means an independent **process** (`node bin/pi-multi-account.mjs serve`), not an independent install: it needs this package's Pi peer dependencies (`@earendil-works/pi-ai`, and the agent directory holding `auth.json` and the account store), and it still does not start Pi, its session daemon or an agent session. Nothing in it speaks the extension API, so extension-only providers of *other* packages do not exist there.
+
 Use `/routes add daily codex/gpt-6.2-sol xai/grok-4.7`, then select `pma/daily` in Pi or send `"model":"daily"` over HTTP. Advanced routes support ordered, rotating, weighted and observed-usage scheduling, explicit accounts and account groups.
 
 Read [the full guide](docs/gateway.md) before sharing subscriptions. Native protocols are preserved where possible; translation has explicit rejection boundaries and is not lossless for every vendor feature. The gateway is not started automatically.
@@ -188,7 +190,11 @@ The extension has to do this because pi loses the field on the way: pi-ai's `ope
 
 ## Security
 
-This package makes eligible Anthropic OAuth requests resemble Claude Code subscription traffic — headers, user-agent, the billing header block, and the request body (see [Request shaping](#request-shaping)). Use it only when permitted by Anthropic's terms and your subscription. Pi extensions have full local system permissions; install only code you trust.
+### What Claude access here actually is
+
+There is no official Anthropic API for subscription usage. This package takes the OAuth token of a Claude Pro/Max sign-in (`sk-ant-oat…`) and sends requests dressed as the Claude Code client: its identity block and beta/user-agent come from pi-ai, the `x-anthropic-billing-header` block is added here, and the prompt and reasoning are shaped to match (see [Request shaping](#request-shaping)). Every layer of that is a guess about Anthropic's classifier, so a change on their side can surface as `You're out of extra usage` or a `reasoning_extraction` refusal on a healthy account. API-key accounts (`sk-ant-api…`) bill normally and need none of it.
+
+Use it only when permitted by Anthropic's terms and your subscription. Pi extensions have full local system permissions; install only code you trust.
 
 ## Development
 

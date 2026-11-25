@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- README: say what "standalone" means for `serve` (an independent process that still needs the Pi peer dependencies and an agent directory, not an independent install), and state plainly what Claude access rests on: a subscription OAuth token sent as Claude Code traffic, not an official API.
+
 ## 1.0.1
 
 - Creating a pool from the accounts menu asks again for an empty, illegal or taken name instead of dropping back to the list with only a warning.

@@ -33,7 +33,9 @@ node bin/pi-multi-account.mjs serve
 ```
 
 The standalone command needs the package's Pi peer dependencies installed, but does not start
-Pi's TUI, session daemon, or SDK agent session. Account and configuration paths follow Pi's
+Pi's TUI, session daemon, or SDK agent session. "Standalone" therefore means an independent
+process, not an independent install: no Pi runs alongside it, but pi-ai must resolve and the agent
+directory must be there. Account and configuration paths follow Pi's
 agent directory; `--agent-dir <path>` selects another directory for the standalone command.
 
 ## Model discovery
