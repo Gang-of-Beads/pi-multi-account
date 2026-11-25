@@ -14,20 +14,24 @@
 import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api, Model, Provider, StreamFunction, TranscriptContext } from "@earendil-works/pi-ai";
-import { streamSimple as anthropicMessages } from "@earendil-works/pi-ai/api/anthropic-messages";
-import { streamSimple as openaiCompletions } from "@earendil-works/pi-ai/api/openai-completions";
-import { streamSimple as openaiResponses } from "@earendil-works/pi-ai/api/openai-responses";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { updateJson } from "./storage.ts";
 
 /** The API shapes a definition may speak; each one is a pi-ai transport, not a vendor. */
 export const PROVIDER_APIS = ["anthropic-messages", "openai-completions", "openai-responses"] as const;
 export type ProviderApi = (typeof PROVIDER_APIS)[number];
 
-/** One transport per api shape; the api's own stream function, nothing rewritten. */
+/**
+ * One transport per api shape. A shape's own module would be the same function, but pi's extension
+ * loader alias maps `@earendil-works/pi-ai` to a compat *file*, so any `/api/...` subpath of it
+ * resolves to `pi-ai-extension-view.js/api/...` and fails (PI WEB 1.1.1: the whole extension did
+ * not load). The compat entry exports one `streamSimple` that dispatches on `model.api`, so every
+ * shape uses it.
+ */
 const TRANSPORTS: Readonly<Record<ProviderApi, StreamFunction>> = {
-	"anthropic-messages": anthropicMessages as unknown as StreamFunction,
-	"openai-responses": openaiResponses as unknown as StreamFunction,
-	"openai-completions": openaiCompletions as unknown as StreamFunction,
+	"anthropic-messages": streamSimple as unknown as StreamFunction,
+	"openai-responses": streamSimple as unknown as StreamFunction,
+	"openai-completions": streamSimple as unknown as StreamFunction,
 };
 
 export interface DefinedModel {
