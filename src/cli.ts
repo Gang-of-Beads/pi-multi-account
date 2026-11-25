@@ -74,14 +74,16 @@ export async function main(argv: string[]): Promise<void> {
 			if (!(await removeProviderDef(dir, rest[0]))) throw new Error(`no provider "${rest[0]}"`);
 			process.stdout.write(`removed ${rest[0]}\n`);
 		} else if (action === "add") {
-			// From a file, stdin, or the argument itself: the definition is JSON, pasted whole when inline.
-			const input = rest.join(" ") || (process.stdin.isTTY ? "" : await new Promise<string>((resolve) => {
-				let text = "";
-				process.stdin.on("data", (chunk: Buffer) => { text += chunk.toString(); });
-				process.stdin.on("end", () => { resolve(text); });
-			}));
-			const text = input.trim() ? (input.trim().startsWith("{") ? input : readFileSync(input, "utf8")) : "";
-			if (!text.trim()) throw new Error("provider add needs a definition: a file path, - for stdin, or the JSON itself");
+			// From a file, stdin (`-`), or the argument itself: the definition is JSON, pasted whole when inline.
+			const readStdin = async (): Promise<string> =>
+				process.stdin.isTTY ? "" : new Promise<string>((resolve) => {
+					let text = "";
+					process.stdin.on("data", (chunk: Buffer) => { text += chunk.toString(); });
+					process.stdin.on("end", () => { resolve(text); });
+				});
+			const input = rest.join(" ");
+			const text = (input === "-" || input === "" ? await readStdin() : input.startsWith("{") ? input : readFileSync(input, "utf8")).trim();
+			if (!text) throw new Error("provider add needs a definition: a file path, - for stdin, or the JSON itself");
 			const added = await addProviderDef(dir, JSON.parse(text) as unknown);
 			process.stdout.write(`added ${added.id} (${added.api}, ${added.models.length} models)\n`);
 		} else throw new Error("Use provider list, provider add <file|->, or provider remove <id>");
