@@ -1,6 +1,6 @@
 {
 	"name": "@gang-of-beads/pi-multi-account",
-	"version": "1.1.2",
+	"version": "1.2.0",
 	"description": "Shared multi-account model runtime, Pi extension and optional subscription API gateway",
 	"bin": {
 		"pi-multi-account": "bin/pi-multi-account.mjs"

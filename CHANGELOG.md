@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+
+- A route target can choose the protocol shape it is served on (`relay/model:openai-responses`), and a definition's model may pin its own `api`; the pin wins over the client's protocol and nothing pinned behaves as before.
+- Fix the catalogue refresh skipping the account in use: it walked only pinned aliases, so the active account kept the list it had when the session opened.
+
 ## 1.1.1
 
 - Fix the abort self-check asserting a rejection that a fast runner can miss.
