@@ -91,6 +91,8 @@ Independently means an independent **process** (`node bin/pi-multi-account.mjs s
 
 Use `/routes add daily codex/gpt-6.2-sol xai/grok-4.7`, then select `pma/daily` in Pi or send `"model":"daily"` over HTTP. Advanced routes support ordered, rotating, weighted and observed-usage scheduling, explicit accounts and account groups.
 
+A target may also name the protocol shape it is served on, `relay/model:openai-responses` or `:anthropic-messages`, and a definition's model may pin its own (`"api"`). The client's shape decides when nothing is pinned; a pinned one wins over it, so the same upstream can be asked the shape that behaves best for it.
+
 Read [the full guide](docs/gateway.md) before sharing subscriptions. Native protocols are preserved where possible; translation has explicit rejection boundaries and is not lossless for every vendor feature. The gateway is not started automatically.
 
 ## Configuration

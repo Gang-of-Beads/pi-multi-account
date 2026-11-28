@@ -108,6 +108,8 @@ A provider alias such as `codex-work` is also usable. The native `codex`/`xai` a
 active named account. Providers registered by other trusted Pi extensions can be imported by the
 Pi adapter; those extension-specific providers are not magically available in standalone mode.
 
+A target may carry `:api` (`relay/model:openai-responses`) to be served on that shape whatever the provider speaks by default, and a definition's model may pin its own `api`. Nothing pinned keeps the client's protocol natively where the upstream speaks it and translates otherwise.
+
 | Mode | First candidate |
 | --- | --- |
 | `order` | First configured target |

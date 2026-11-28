@@ -36,6 +36,8 @@ export interface Target {
 	model: string;
 	account?: string;
 	weight?: number;
+	/** Serve this target on that protocol shape, whatever the provider speaks by default. */
+	api?: Api;
 }
 export interface ResolvedTarget {
 	model: Model<Api>;
@@ -288,10 +290,12 @@ export class PmaEngine {
 		const errors: string[] = [];
 		await Promise.all(
 			[...this.aliases]
-				.filter(([, a]) => a.account !== undefined)
 				.map(async ([id, a]) => {
 					try {
-						const held = await this.account(a.provider, a.account);
+						// The active account has no pin: `refreshAccount` then follows `state.active`, which is
+						// what the plain anthropic/codex ids serve. Skipping it left the account in use
+						// with the catalogue it had when the session opened.
+						const held = a.account === undefined ? await this.account(a.provider) : await this.account(a.provider, a.account);
 						if (options.refreshTokens === false && held && held.credential.expires <= Date.now() + REFRESH_SKEW_MS) return;
 						await this.refreshAccount(a.provider, a.account, signal, options.force);
 					} catch {
@@ -335,8 +339,10 @@ export class PmaEngine {
 			const name = this.store.read().providers[active.provider as never]?.active;
 			if (name) id = accountProviderId(active.provider, name);
 		}
-		const model = this.models.getModel(id, target.model);
-		if (!model) throw new Error(`Unknown model: ${id}/${target.model}; refresh the catalog`);
+		const found = this.models.getModel(id, target.model);
+		if (!found) throw new Error(`Unknown model: ${id}/${target.model}; refresh the catalog`);
+		// A chosen shape is the whole point of the switch: the same upstream, asked another protocol.
+		const model = target.api === undefined || target.api === found.api ? found : { ...found, api: target.api } as Model<Api>;
 		const alias = this.aliases.get(id);
 		return { model, provider: alias?.provider ?? id, account: alias?.account ?? target.account };
 	}

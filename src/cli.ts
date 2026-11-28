@@ -11,7 +11,7 @@ import { startGateway } from "./gateway/server.ts";
 const HELP = `pi-multi-account
   serve [--host 127.0.0.1] [--port 8787]     Start the optional HTTP gateway
   models [refresh]                          List or refresh account models
-  route add <id> <provider/model>...         Save an ordered route
+  route add <id> <provider/model[:api]>...   Save an ordered route (api: anthropic-messages | openai-completions | openai-responses)
   provider list                             List user-defined providers (never keys)
   provider add [<file|->]                    Add one from JSON (file, stdin, or as the next argument)
   provider remove <id>                       Delete a definition
@@ -94,7 +94,7 @@ export async function main(argv: string[]): Promise<void> {
 			const [id, ...inputs] = rest;
 			const targets = inputs.map(parseTarget);
 			await saveRoute(dir, { id, mode: "order", targets, translate: true });
-		} else if (action !== "list") throw new Error("Use route add <id> <provider[@account]/model>... or route list");
+		} else if (action !== "list") throw new Error("Use route add <id> <provider[@account]/model[:api]>... or route list");
 		process.stdout.write(`${JSON.stringify(readRoutes(dir), null, 2)}\n`);
 		return;
 	}

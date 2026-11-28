@@ -36,6 +36,8 @@ const TRANSPORTS: Readonly<Record<ProviderApi, StreamFunction>> = {
 
 export interface DefinedModel {
 	id: string;
+	/** Serve this model on another shape than the provider's, e.g. a relay that speaks two. */
+	api?: ProviderApi;
 	name?: string;
 	context?: number;
 	maxTokens?: number;
@@ -86,6 +88,8 @@ function checkModel(raw: unknown, index: number): DefinedModel {
 	if (!Number.isSafeInteger(maxTokens) || (maxTokens as number) < 1) fail(`models[${index}].maxTokens must be a positive integer`);
 	if (m["name"] !== undefined && typeof m["name"] !== "string") fail(`models[${index}].name must be a string`);
 	if (m["reasoning"] !== undefined && typeof m["reasoning"] !== "boolean") fail(`models[${index}].reasoning must be a boolean`);
+	if (m["api"] !== undefined && !PROVIDER_APIS.includes(m["api"] as ProviderApi))
+		fail(`models[${index}].api must be one of ${PROVIDER_APIS.join(", ")}`);
 	const input = m["input"] ?? ["text"];
 	if (!Array.isArray(input) || input.length === 0 || input.some((v) => v !== "text" && v !== "image"))
 		fail(`models[${index}].input must be a non-empty list of "text" and "image"`);
@@ -95,6 +99,7 @@ function checkModel(raw: unknown, index: number): DefinedModel {
 		context: context as number,
 		maxTokens: maxTokens as number,
 		...(m["reasoning"] === true ? { reasoning: true } : {}),
+		...(m["api"] === undefined ? {} : { api: m["api"] as ProviderApi }),
 		input: input as ("text" | "image")[],
 	};
 }
@@ -207,7 +212,7 @@ export function definitionToProvider(definition: ProviderDefinition): Provider {
 			({
 				id: m.id,
 				name: m.name ?? m.id,
-				api: definition.api,
+				api: m.api ?? definition.api,
 				provider: definition.id,
 				baseUrl: definition.baseUrl,
 				input: m.input ?? ["text"],
@@ -219,7 +224,6 @@ export function definitionToProvider(definition: ProviderDefinition): Provider {
 			}) as Model<Api>,
 	);
 	const source = `provider-def:${definition.id}`;
-	const stream = TRANSPORTS[definition.api];
 	return {
 		id: definition.id,
 		name: definition.name ?? definition.id,
@@ -238,7 +242,8 @@ export function definitionToProvider(definition: ProviderDefinition): Provider {
 		getModels: () => models,
 		// Nothing to discover: the definition is the catalogue.
 		refreshModels: () => Promise.resolve(),
-		stream: (model, context, options) => stream(model, context, options),
-		streamSimple: (model, context: TranscriptContext, options) => stream(model, context, options),
+		// The transport follows each model: one definition may offer models on two shapes.
+		stream: (model, context, options) => TRANSPORTS[model.api as ProviderApi](model, context, options),
+		streamSimple: (model, context: TranscriptContext, options) => TRANSPORTS[model.api as ProviderApi](model, context, options),
 	};
 }
