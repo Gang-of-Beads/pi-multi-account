@@ -9,6 +9,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { PmaEngine, ResolvedTarget, Target } from "./engine.ts";
+import { PROVIDER_APIS, type ProviderApi } from "./provider-defs.ts";
 import { positive, readJson, record, updateJson } from "./storage.ts";
 
 export interface Route {
@@ -27,7 +28,9 @@ export function parseTarget(reference: string): Target {
 	if (slash < 1) throw new Error("Use provider[@account]/model for each target");
 	const [provider, account, ...extra] = reference.slice(0, slash).split("@");
 	if (extra.length) throw new Error("Use only one account qualifier per target");
-	const target = { provider, ...(account === undefined ? {} : { account }), model: reference.slice(slash + 1) };
+	// `provider/model:api` pins the shape this target is served on (`@account` stays the account).
+	const [model, api] = reference.slice(slash + 1).split(":");
+	const target = { provider, ...(account === undefined ? {} : { account }), model: model!, ...(api === undefined ? {} : { api: api as ProviderApi }) };
 	validateRoutes({ version: 1, routes: [{ id: "validate-target", mode: "order", targets: [target] }] });
 	return target;
 }
@@ -59,7 +62,8 @@ export function validateRoutes(value: unknown): RoutesFile {
 				t.model.length > 200 ||
 				/[\s\x00-\x1f]/.test(t.model) ||
 				(t.account !== undefined && (typeof t.account !== "string" || !/^(\*|[a-zA-Z0-9._-]{1,64})$/.test(t.account))) ||
-				(t.weight !== undefined && (!positive(t.weight) || t.weight > 1000))
+				(t.weight !== undefined && (!positive(t.weight) || t.weight > 1000)) ||
+				(t.api !== undefined && !PROVIDER_APIS.includes(t.api as ProviderApi))
 			)
 				throw new Error(`Invalid target in route ${r.id}`);
 	}
